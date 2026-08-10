@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
-import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2, Sparkles } from 'lucide-react';
+import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2 } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
@@ -50,8 +50,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0, skipped: 0 });
+  
   const geocodedRef = useRef(new Set());
   const existingFingerprintsRef = useRef(new Set());
+  const fileInputRef = useRef(null);
 
   // Keep track of existing fingerprints for instant deduplication
   useEffect(() => {
@@ -117,62 +119,59 @@ export default function App() {
     doGeocode();
   }, [photos]);
 
-  // High-Speed Bulk Gallery Import with Automatic Deduplication & Screenshot Filtering
+  // High-Speed Bulk Gallery Import Handler via DOM File Input (100% Android WebView Compatible)
   const handleGalleryPick = () => {
     if (progressState.active) return;
+    if (fileInputRef.current) {
+      fileInputRef.current.value = null; // Reset value to ensure re-selection triggers onChange
+      fileInputRef.current.click();
+    }
+  };
 
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.multiple = true;
-    input.accept = 'image/*';
+  const handleFileInputChange = async (e) => {
+    const rawFiles = Array.from(e.target.files || []);
+    if (rawFiles.length === 0) return;
 
-    input.onchange = async (e) => {
-      const rawFiles = Array.from(e.target.files || []);
-      if (rawFiles.length === 0) return;
+    // 1. Instant Deduplication Check: Filter out files already in database
+    const existing = existingFingerprintsRef.current;
+    let skippedCount = 0;
+    const newFiles = [];
 
-      // 1. Instant Deduplication Check: Filter out files already in database
-      const existing = existingFingerprintsRef.current;
-      let skippedCount = 0;
-      const newFiles = [];
+    for (const file of rawFiles) {
+      const fp = getPhotoFingerprint(file);
+      if (existing.has(fp) || existing.has(file.name)) {
+        skippedCount++;
+      } else {
+        newFiles.push(file);
+      }
+    }
 
-      for (const file of rawFiles) {
-        const fp = getPhotoFingerprint(file);
-        if (existing.has(fp) || existing.has(file.name)) {
-          skippedCount++;
-        } else {
-          newFiles.push(file);
+    if (newFiles.length === 0) {
+      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 추가되었거나 중복되어 제외되었습니다.`);
+      return;
+    }
+
+    setProgressState({ active: true, current: 0, total: newFiles.length, skipped: skippedCount });
+
+    try {
+      // 2. Ultra-Fast Parallel Header Processing (12 workers)
+      const parsedPhotos = await processInChunks(
+        newFiles,
+        12,
+        async (file) => await parsePhotoExif(file),
+        (current, total) => {
+          setProgressState(prev => ({ ...prev, current, total }));
         }
+      );
+
+      if (parsedPhotos.length > 0) {
+        setPhotos(prev => [...parsedPhotos, ...prev]);
       }
-
-      if (newFiles.length === 0) {
-        alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 추가되었거나 중복되어 제외되었습니다.`);
-        return;
-      }
-
-      setProgressState({ active: true, current: 0, total: newFiles.length, skipped: skippedCount });
-
-      try {
-        // 2. Ultra-Fast Parallel Header Processing (12 workers, 4KB chunked)
-        const parsedPhotos = await processInChunks(
-          newFiles,
-          12,
-          async (file) => await parsePhotoExif(file),
-          (current, total) => {
-            setProgressState(prev => ({ ...prev, current, total }));
-          }
-        );
-
-        if (parsedPhotos.length > 0) {
-          setPhotos(prev => [...parsedPhotos, ...prev]);
-        }
-      } catch (err) {
-        console.error("EXIF Bulk Import Error:", err);
-      } finally {
-        setProgressState({ active: false, current: 0, total: 0, skipped: 0 });
-      }
-    };
-
-    input.click();
+    } catch (err) {
+      console.error("EXIF Bulk Import Error:", err);
+    } finally {
+      setProgressState({ active: false, current: 0, total: 0, skipped: 0 });
+    }
   };
 
   const handleResetData = () => {
@@ -199,6 +198,16 @@ export default function App() {
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#000' }}>
+      {/* Hidden File Input mounted directly in DOM for 100% Android WebView compatibility */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={handleFileInputChange}
+      />
+
       {/* Top Header */}
       <header className="header glass-surface">
         <div className="header-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
