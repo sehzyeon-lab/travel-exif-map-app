@@ -1,21 +1,56 @@
 package com.beyondintuition.travelexifmap;
 
+import android.Manifest;
 import android.content.ContentUris;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.MediaStore;
+
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
+import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import com.getcapacitor.annotation.Permission;
+import com.getcapacitor.annotation.PermissionCallback;
 
-@CapacitorPlugin(name = "MediaStoreScanner")
+@CapacitorPlugin(
+    name = "MediaStoreScanner",
+    permissions = {
+        @Permission(
+            alias = "publicStorage",
+            strings = {
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.ACCESS_MEDIA_LOCATION
+            }
+        )
+    }
+)
 public class MediaStorePlugin extends Plugin {
 
     @PluginMethod
     public void scanGallery(PluginCall call) {
+        if (getPermissionState("publicStorage") != PermissionState.GRANTED) {
+            requestPermissionForAlias("publicStorage", call, "permissionCallback");
+            return;
+        }
+
+        doScan(call);
+    }
+
+    @PermissionCallback
+    private void permissionCallback(PluginCall call) {
+        if (getPermissionState("publicStorage") == PermissionState.GRANTED) {
+            doScan(call);
+        } else {
+            call.reject("Permission not granted by user");
+        }
+    }
+
+    private void doScan(PluginCall call) {
         JSArray photos = new JSArray();
         
         String[] projection = new String[] {
