@@ -149,14 +149,22 @@ export default function App() {
     const rawFiles = Array.from(e.target.files || []);
     if (rawFiles.length === 0) return;
 
-    // 1. Instant Deduplication Check: Filter out files already in database
-    const existing = existingFingerprintsRef.current;
+    // 1. Instant Deduplication Check: Skip duplicates ONLY if they already have valid GPS data
+    const existingMap = new Map();
+    photos.forEach(p => {
+      if (p.fingerprint) existingMap.set(p.fingerprint, p);
+      if (p.name) existingMap.set(p.name, p);
+    });
+
     let skippedCount = 0;
     const newFiles = [];
 
     for (const file of rawFiles) {
       const fp = getPhotoFingerprint(file);
-      if (existing.has(fp) || existing.has(file.name)) {
+      const existingPhoto = existingMap.get(fp) || existingMap.get(file.name);
+      
+      // If photo already exists AND has valid GPS data, skip it
+      if (existingPhoto && existingPhoto.hasGps) {
         skippedCount++;
       } else {
         newFiles.push(file);
@@ -164,7 +172,7 @@ export default function App() {
     }
 
     if (newFiles.length === 0) {
-      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 추가되었거나 중복되어 제외되었습니다.`);
+      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 위치 정보와 함께 저장되어 있어 제외되었습니다.`);
       return;
     }
 
@@ -182,7 +190,22 @@ export default function App() {
       );
 
       if (parsedPhotos.length > 0) {
-        setPhotos(prev => [...parsedPhotos, ...prev]);
+        setPhotos(prev => {
+          const updatedMap = new Map();
+          // Insert newly parsed fresh photos first
+          parsedPhotos.forEach(p => {
+            const key = p.fingerprint || p.name;
+            if (key) updatedMap.set(key, p);
+          });
+          // Preserve existing photos if not replaced by fresh version
+          prev.forEach(p => {
+            const key = p.fingerprint || p.name;
+            if (key && !updatedMap.has(key)) {
+              updatedMap.set(key, p);
+            }
+          });
+          return Array.from(updatedMap.values());
+        });
       }
     } catch (err) {
       console.error("EXIF Bulk Import Error:", err);
