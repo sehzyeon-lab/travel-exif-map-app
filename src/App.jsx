@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Camera } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
 import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2 } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
