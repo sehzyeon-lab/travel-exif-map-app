@@ -16,52 +16,92 @@ export function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+/** Photos taken within this radius of the registered home are treated as "not travel". */
+export const HOME_RADIUS_KM = 3;
+/** A trip whose centroid stays within this radius of home counts as a local outing, not a trip. */
+const OUTING_RADIUS_KM = 15;
+
+/** True when a GPS photo was taken close to the user's registered home. */
+export function isAtHome(photo, home) {
+  if (!home || !photo?.hasGps) return false;
+  return calculateHaversineDistance(photo.latitude, photo.longitude, home.lat, home.lng) <= HOME_RADIUS_KM;
+}
+
+/** Stable key for a trip so a user's custom name survives re-clustering. */
+export function tripKeyOf(startTimestamp, centerLat, centerLng) {
+  const day = new Date(startTimestamp).toISOString().slice(0, 10);
+  return `${day}_${centerLat.toFixed(1)}_${centerLng.toFixed(1)}`;
+}
+
 /**
- * Spatio-Temporal Trip Clustering Algorithm
- * Clusters photos into discrete "Trips" based on distance (<50km) and time gap (<48 hours)
- * @param {Array} photos List of photo metadata objects
- * @param {number} maxDistanceKm Maximum distance threshold (default 50km)
- * @param {number} maxTimeGapHours Maximum time gap threshold (default 48h)
- * @returns {Array} List of Trip objects
+ * Spatio-Temporal Trip Clustering.
+ *
+ * Photos are grouped into a trip while they stay close in time AND space. Compared to the old
+ * per-photo pairing, two things reduce over-segmentation: the distance is measured against the
+ * trip's running centroid (so a wide-area day out doesn't fragment), and the thresholds are more
+ * generous. Photos taken at/near the registered home are dropped first, so "at home" gaps don't
+ * artificially split neighbouring travel days.
+ *
+ * @param {Array}  photos
+ * @param {object} [options]
+ * @param {{lat:number,lng:number}} [options.home]      Registered home; nearby photos are excluded.
+ * @param {Map|object} [options.nameOverrides]          tripKey -> custom title.
+ * @param {number} [options.maxDistanceKm]              Max distance from a trip's centroid (default 80).
+ * @param {number} [options.maxTimeGapHours]            Max quiet gap before a new trip starts (default 36).
  */
-export function clusterPhotosIntoTrips(photos, maxDistanceKm = 50, maxTimeGapHours = 48) {
-  const gpsPhotos = photos.filter(p => p.hasGps).sort((a, b) => a.timestamp - b.timestamp);
+export function clusterPhotosIntoTrips(photos, options = {}) {
+  const {
+    home = null,
+    nameOverrides = null,
+    maxDistanceKm = 80,
+    maxTimeGapHours = 36
+  } = options;
+
+  const getOverride = (key) =>
+    nameOverrides instanceof Map ? nameOverrides.get(key) : nameOverrides?.[key];
+
+  const gpsPhotos = photos
+    .filter((p) => p.hasGps && !isAtHome(p, home))
+    .sort((a, b) => a.timestamp - b.timestamp);
   if (gpsPhotos.length === 0) return [];
 
-  const trips = [];
-  let currentTripPhotos = [gpsPhotos[0]];
+  const groups = [];
+  let current = [gpsPhotos[0]];
+  let sumLat = gpsPhotos[0].latitude;
+  let sumLng = gpsPhotos[0].longitude;
 
   for (let i = 1; i < gpsPhotos.length; i++) {
-    const prev = currentTripPhotos[currentTripPhotos.length - 1];
+    const prev = current[current.length - 1];
     const curr = gpsPhotos[i];
 
     const timeGapHours = Math.abs(curr.timestamp - prev.timestamp) / (1000 * 60 * 60);
-    const distKm = calculateHaversineDistance(prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+    const centroidLat = sumLat / current.length;
+    const centroidLng = sumLng / current.length;
+    const distFromCentroid = calculateHaversineDistance(centroidLat, centroidLng, curr.latitude, curr.longitude);
 
-    // If photos are close in time AND space, group into same trip
-    if (timeGapHours <= maxTimeGapHours && distKm <= maxDistanceKm) {
-      currentTripPhotos.push(curr);
+    if (timeGapHours <= maxTimeGapHours && distFromCentroid <= maxDistanceKm) {
+      current.push(curr);
+      sumLat += curr.latitude;
+      sumLng += curr.longitude;
     } else {
-      // Finalize previous trip
-      trips.push(createTripRecord(currentTripPhotos));
-      currentTripPhotos = [curr];
+      groups.push(current);
+      current = [curr];
+      sumLat = curr.latitude;
+      sumLng = curr.longitude;
     }
   }
+  groups.push(current);
 
-  if (currentTripPhotos.length > 0) {
-    trips.push(createTripRecord(currentTripPhotos));
-  }
+  const trips = groups.map((g) => createTripRecord(g, { home, getOverride }));
 
-  // The route itself stays time-ascending inside each trip, while the record list presents the
-  // most recent journey first.
+  // The route stays time-ascending inside each trip; the list shows the most recent journey first.
   return trips.reverse();
 }
 
-function createTripRecord(photos) {
+function createTripRecord(photos, { home, getOverride } = {}) {
   const startDate = new Date(photos[0].timestamp);
   const endDate = new Date(photos[photos.length - 1].timestamp);
-  
-  // Calculate total route distance
+
   let totalDistance = 0;
   for (let i = 0; i < photos.length - 1; i++) {
     totalDistance += calculateHaversineDistance(
@@ -70,19 +110,54 @@ function createTripRecord(photos) {
     );
   }
 
-  // Calculate centroid
   const avgLat = photos.reduce((sum, p) => sum + p.latitude, 0) / photos.length;
   const avgLng = photos.reduce((sum, p) => sum + p.longitude, 0) / photos.length;
 
-  const durationDays = Math.max(1, Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)));
+  // Calendar-day span so an overnight stay reads as 2일 even if it's <24h apart.
+  const startDay = new Date(startDate); startDay.setHours(0, 0, 0, 0);
+  const endDay = new Date(endDate); endDay.setHours(0, 0, 0, 0);
+  const durationDays = Math.max(1, Math.round((endDay - startDay) / (1000 * 60 * 60 * 24)) + 1);
+  const nights = durationDays - 1;
+
+  const distanceFromHome = home
+    ? calculateHaversineDistance(avgLat, avgLng, home.lat, home.lng)
+    : null;
+
+  // Categorise: overnight => 여행, else near home => 나들이, else => 당일 여행.
+  let kind = 'day';
+  if (nights >= 1) kind = 'trip';
+  else if (distanceFromHome != null && distanceFromHome <= OUTING_RADIUS_KM) kind = 'outing';
+
+  const placeName = photos[0].locationName && photos[0].locationName !== '위치 확인 중...' && photos[0].locationName !== '위치 정보 없음'
+    ? shortPlace(photos[0].locationName)
+    : null;
+
+  const durationLabel = nights >= 1 ? `${nights}박 ${durationDays}일` : '당일';
+  const kindLabel = kind === 'outing' ? '나들이' : nights >= 1 ? '여행' : '나들이';
+
+  const tripKey = tripKeyOf(photos[0].timestamp, avgLat, avgLng);
+  const override = getOverride?.(tripKey);
+  const autoTitle = placeName
+    ? `${placeName} ${kindLabel}`
+    : nights >= 1 ? '추억의 여행' : '나들이';
 
   return {
     // Derived from the first photo so re-clustering keeps stable React keys.
     id: 'trip_' + photos[0].id,
-    title: photos[0].locationName !== '위치 확인 중...' ? photos[0].locationName + ' 여행' : '추억의 여행',
+    tripKey,
+    title: override || autoTitle,
+    hasCustomName: !!override,
+    kind,
+    kindLabel,
+    durationLabel,
+    placeName,
+    startTimestamp: photos[0].timestamp,
+    endTimestamp: photos[photos.length - 1].timestamp,
     startDateFormatted: startDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' }),
     endDateFormatted: endDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' }),
     durationDays,
+    nights,
+    distanceFromHome: distanceFromHome != null ? Math.round(distanceFromHome) : null,
     totalDistanceKm: Math.round(totalDistance * 10) / 10,
     photoCount: photos.length,
     coverPhoto: photos[0],
@@ -90,6 +165,13 @@ function createTripRecord(photos) {
     centerLat: avgLat,
     centerLng: avgLng
   };
+}
+
+/** Trims a full geocoded string ("대한민국 서울특별시 종로구") down to its two most specific parts. */
+function shortPlace(name) {
+  const parts = name.split(' ').filter(Boolean);
+  if (parts.length <= 2) return name;
+  return parts.slice(-2).join(' ');
 }
 
 /**

@@ -36,7 +36,7 @@ export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto })
         <div style={{ padding: '20px 16px' }}>
           <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
             <div style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
-              <h3 className="text-truncate" style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: '600', color: '#FFF' }}>
+              <h3 className="text-truncate" style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: '800', letterSpacing: '-0.02em', color: 'var(--paper)' }}>
                 {photo.name}
               </h3>
               {photo.locationName && (
@@ -51,13 +51,14 @@ export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto })
             <button
               onClick={handleDelete}
               style={{
-                background: 'rgba(255, 69, 58, 0.15)',
-                border: 'none',
+                background: 'rgba(217, 96, 60, 0.14)',
+                border: '1px solid rgba(217,96,60,0.35)',
                 borderRadius: '10px',
                 padding: '8px 12px',
-                color: 'var(--apple-red)',
-                fontSize: '13px',
-                fontWeight: 600,
+                color: 'var(--rust)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '12px',
+                fontWeight: 700,
                 display: 'flex',
                 alignItems: 'center',
                 gap: '4px',
@@ -107,15 +108,17 @@ export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto })
             <button 
               onClick={onFocusMap}
               style={{
-                width: '100%',
-                padding: '16px',
-                marginTop: '16px',
-                backgroundColor: 'var(--apple-blue)',
-                color: '#FFF',
+                width: 'calc(100% - 32px)',
+                margin: '16px',
+                padding: '15px',
+                background: 'linear-gradient(180deg, var(--amber), var(--amber-deep))',
+                color: '#241a09',
                 border: 'none',
-                borderRadius: '12px',
-                fontSize: '16px',
-                fontWeight: '600',
+                borderRadius: '13px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '14px',
+                fontWeight: '700',
+                letterSpacing: '0.03em',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',

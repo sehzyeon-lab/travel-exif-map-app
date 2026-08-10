@@ -29,6 +29,27 @@ const IDLE_PROGRESS = { active: false, current: 0, total: 0, skipped: 0, label: 
 const GEOCODE_INTERVAL_MS = 1100;
 
 const LAST_SCAN_KEY = 'travel_last_scan_at';
+const HOME_KEY = 'travel_home_location';
+const TRIP_NAMES_KEY = 'travel_trip_names';
+
+function readHome() {
+  try {
+    const raw = localStorage.getItem(HOME_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.lat === 'number' && typeof parsed?.lng === 'number' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readTripNames() {
+  try {
+    return JSON.parse(localStorage.getItem(TRIP_NAMES_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
 
 function readLastScanAt() {
   try {
@@ -96,6 +117,8 @@ export default function App() {
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [home, setHome] = useState(() => readHome());
+  const [tripNames, setTripNames] = useState(() => readTripNames());
 
   const geocodedRef = useRef(new Set());
   const fileInputRef = useRef(null);
@@ -136,7 +159,7 @@ export default function App() {
   // Recompute trips immediately, persist on a trailing debounce (a full rewrite of thousands of
   // records on every geocode tick would thrash IndexedDB).
   useEffect(() => {
-    setTrips(clusterPhotosIntoTrips(photos));
+    setTrips(clusterPhotosIntoTrips(photos, { home, nameOverrides: tripNames }));
     if (!hydrated) return;
 
     clearTimeout(saveTimerRef.current);
@@ -146,7 +169,7 @@ export default function App() {
     }, 800);
 
     return () => clearTimeout(saveTimerRef.current);
-  }, [photos, hydrated]);
+  }, [photos, hydrated, home, tripNames]);
 
   // Reassigned on mount, not just cleared on unmount, so StrictMode's double-invoke in dev doesn't
   // leave the flag stuck at false.
@@ -212,7 +235,7 @@ export default function App() {
     drainGeocodeQueue();
   }, [photos, drainGeocodeQueue]);
 
-  const handleScanGallery = useCallback(async ({ incremental = false } = {}) => {
+  const handleScanGallery = useCallback(async ({ incremental = false, silent = false } = {}) => {
     if (scanningRef.current) return;
 
     if (!isNative()) {
@@ -223,14 +246,18 @@ export default function App() {
 
     scanningRef.current = true;
     setNotice(null);
-    setProgressState({ active: true, current: 0, total: 0, skipped: 0, label: '갤러리를 읽는 중...' });
+    // A silent background refresh shows no progress banner — the launch-time incremental pass
+    // reads only what changed since last scan, so surfacing "분석 중..." every time is just noise.
+    if (!silent) {
+      setProgressState({ active: true, current: 0, total: 0, skipped: 0, label: '갤러리를 읽는 중...' });
+    }
 
     try {
       const result = await scanDeviceGallery({
         since: incremental ? readLastScanAt() : 0,
         // A launch-time refresh must stay silent; only the explicit button may raise a dialog.
         requestLocationPermission: !incremental,
-        onProgress: (current, total) => {
+        onProgress: silent ? undefined : (current, total) => {
           setProgressState({
             active: true,
             current,
@@ -246,7 +273,9 @@ export default function App() {
       }
       writeLastScanAt(result.scannedAt);
 
-      if (incremental && result.photos.length === 0) {
+      if (silent) {
+        // Background refresh: stay quiet. Any new photos already merged in above.
+      } else if (incremental && result.photos.length === 0) {
         // Nothing new since last time — that's the expected quiet path, not a problem.
       } else if (!result.mediaLocationGranted) {
         setNotice({
@@ -284,8 +313,10 @@ export default function App() {
     autoScanDoneRef.current = true;
 
     checkMediaAccess().then((access) => {
-      // A first run has to read everything; later launches only pick up what changed.
-      if (access.read) handleScanGallery({ incremental: photos.length > 0 && readLastScanAt() > 0 });
+      // A first run has to read everything; later launches only pick up what changed, and do so
+      // silently so the user never sees "분석 중..." on a launch with nothing new.
+      const incremental = photos.length > 0 && readLastScanAt() > 0;
+      if (access.read) handleScanGallery({ incremental, silent: incremental });
     });
   }, [hydrated, photos.length, handleScanGallery]);
 
@@ -360,10 +391,32 @@ export default function App() {
   }, []);
   const handleDeleteSelected = useCallback(() => {
     if (selectedPhotoIds.size === 0) return;
-    if (!window.confirm(`선택한 사진 ${selectedPhotoIds.size}장을 삭제할까요?`)) return;
-    setPhotos((prev) => prev.filter((photo) => !selectedPhotoIds.has(photo.id)));
+    const idsToDelete = new Set(selectedPhotoIds);
+    setPhotos((prev) => prev.filter((photo) => !idsToDelete.has(photo.id)));
     setSelectedPhotoIds(new Set());
   }, [selectedPhotoIds]);
+
+  // Rename persists by trip key so a custom name survives re-clustering (blank clears it).
+  const handleRenameTrip = useCallback((tripKey, name) => {
+    setTripNames((prev) => {
+      const next = { ...prev };
+      const trimmed = (name || '').trim();
+      if (trimmed) next[tripKey] = trimmed;
+      else delete next[tripKey];
+      try {
+        localStorage.setItem(TRIP_NAMES_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleSetHome = useCallback((location) => {
+    setHome(location);
+    try {
+      if (location) localStorage.setItem(HOME_KEY, JSON.stringify(location));
+      else localStorage.removeItem(HOME_KEY);
+    } catch {}
+  }, []);
 
   const gpsCount = photos.reduce((n, p) => n + (p.hasGps ? 1 : 0), 0);
 
@@ -379,13 +432,13 @@ export default function App() {
       />
 
       <header className="header glass-surface">
-        <div className="header-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span>여행 기록</span>
-          {photos.length > 0 && (
-            <span style={{ fontSize: '11px', background: 'rgba(0,122,255,0.2)', color: 'var(--apple-blue)', padding: '2px 6px', borderRadius: '8px', fontWeight: 600 }}>
-              {photos.length}장 · GPS {gpsCount}
-            </span>
-          )}
+        <div className="header-title">
+          <span className="header-wordmark">여행 기록</span>
+          <span className="header-logline">
+            {photos.length > 0
+              ? <>{photos.length} FRAMES · <span className="hl-amber">{gpsCount} GEOTAGGED</span></>
+              : 'FIELD LOG'}
+          </span>
         </div>
         <div className="header-actions">
           <button className="header-btn" onClick={() => setShowDownloadModal(true)} aria-label="Android APK 다운로드"><Download size={18} /></button>
@@ -396,54 +449,37 @@ export default function App() {
           )}
 
           <button
-            className="header-btn"
+            className="header-scan-btn"
             onClick={() => handleScanGallery({ incremental: false })}
             disabled={progressState.active}
-            style={{ background: 'var(--apple-blue)', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 12px', width: 'auto', borderRadius: '18px' }}
             aria-label="갤러리 스캔"
           >
-            {progressState.active ? (
-              <>
-                <Loader2 size={16} className="spin-icon" />
-                <span style={{ fontSize: '13px', fontWeight: 600 }}>스캔 중</span>
-              </>
-            ) : (
-              <>
-                <FolderSearch size={16} />
-                <span style={{ fontSize: '13px', fontWeight: 600 }}>갤러리 스캔</span>
-              </>
-            )}
+            {progressState.active
+              ? <><Loader2 size={15} className="spin-icon" /> 스캔 중</>
+              : <><FolderSearch size={15} /> 스캔</>}
           </button>
         </div>
       </header>
 
       {progressState.active && (
         <div className="floating-banner">
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+          <div className="banner-label">
+            <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+              <Loader2 size={13} className="spin-icon" />
               {progressState.label || '사진 분석 중...'}
             </span>
             {progressState.total > 0 && (
-              <span style={{ color: 'var(--apple-blue)' }}>
-                {progressState.current} / {progressState.total} ({Math.round((progressState.current / progressState.total) * 100)}%)
+              <span className="banner-count">
+                {progressState.current}/{progressState.total} · {Math.round((progressState.current / progressState.total) * 100)}%
               </span>
             )}
           </div>
           {progressState.skipped > 0 && (
-            <div style={{ fontSize: '11px', color: 'rgba(235,235,245,0.6)', marginBottom: '6px' }}>
-              ℹ️ 중복 {progressState.skipped}장 자동 제외됨
-            </div>
+            <div className="banner-note">중복 {progressState.skipped}장 자동 제외됨</div>
           )}
           {progressState.total > 0 && (
-            <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-              <div style={{
-                width: `${(progressState.current / progressState.total) * 100}%`,
-                height: '100%',
-                background: 'var(--apple-blue)',
-                borderRadius: '2px',
-                transition: 'width 0.2s ease'
-              }} />
+            <div className="banner-track">
+              <div className="banner-fill" style={{ width: `${(progressState.current / progressState.total) * 100}%` }} />
             </div>
           )}
         </div>
@@ -451,21 +487,21 @@ export default function App() {
 
       {!progressState.active && geocodeProgress.active && (
         <div className="floating-banner">
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Loader2 size={14} className="spin-icon" />{geocodeProgress.label}</span>
-            <span style={{ color: 'var(--apple-blue)' }}>{geocodeProgress.current} / {geocodeProgress.total}</span>
+          <div className="banner-label">
+            <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}><Loader2 size={13} className="spin-icon" />{geocodeProgress.label}</span>
+            <span className="banner-count">{geocodeProgress.current}/{geocodeProgress.total}</span>
           </div>
-          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}><div style={{ width: `${(geocodeProgress.current / geocodeProgress.total) * 100}%`, height: '100%', background: 'var(--apple-blue)', transition: 'width .2s ease' }} /></div>
+          <div className="banner-track"><div className="banner-fill" style={{ width: `${(geocodeProgress.current / geocodeProgress.total) * 100}%` }} /></div>
         </div>
       )}
 
       {notice && !progressState.active && (
         <div className="floating-banner" onClick={() => setNotice(null)}>
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '13px', color: '#fff', lineHeight: 1.45 }}>
+          <div style={{ display: 'flex', gap: '9px', alignItems: 'flex-start', fontSize: '13px', color: 'var(--paper)', lineHeight: 1.5 }}>
             <AlertTriangle
               size={16}
               style={{ flexShrink: 0, marginTop: '1px' }}
-              color={notice.type === 'error' ? 'var(--apple-red, #FF3B30)' : 'var(--apple-blue)'}
+              color={notice.type === 'error' ? 'var(--rust)' : 'var(--amber)'}
             />
             <span>{notice.message}</span>
           </div>
@@ -473,10 +509,10 @@ export default function App() {
       )}
 
       <div className="content-area">
-        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} focusPhoto={mapFocusPhoto} />}
-        {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={() => setActiveTab('map')} />}
-        {activeTab === 'gallery' && <GalleryView photos={photos} onPhotoSelect={setSelectedPhoto} selectedIds={selectedPhotoIds} onToggleSelection={handleToggleSelection} onDeleteSelected={handleDeleteSelected} onClearSelection={() => setSelectedPhotoIds(new Set())} />}
-        {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} />}
+        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} focusPhoto={mapFocusPhoto} home={home} onSetHome={handleSetHome} />}
+        {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={(trip) => handleFocusMap(trip?.coverPhoto)} onRenameTrip={handleRenameTrip} home={home} onSetHome={handleSetHome} />}
+        {activeTab === 'gallery' && <GalleryView photos={photos} onPhotoSelect={setSelectedPhoto} selectedIds={selectedPhotoIds} onToggleSelection={handleToggleSelection} onSelectionChange={setSelectedPhotoIds} onDeleteSelected={handleDeleteSelected} onClearSelection={() => setSelectedPhotoIds(new Set())} />}
+        {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} home={home} />}
       </div>
 
       <nav className="tab-bar glass-surface">
