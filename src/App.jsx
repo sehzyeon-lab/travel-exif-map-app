@@ -114,7 +114,7 @@ export default function App() {
       if (Capacitor.isNativePlatform()) {
         const result = await Camera.pickImages({
           quality: 85,
-          limit: 0 // 0 = unlimited multi-select in system picker
+          limit: 5000 // 5000 max images allows selecting all photos in Android Photo Picker
         });
 
         if (!result.photos || result.photos.length === 0) return;

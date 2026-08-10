@@ -42,12 +42,29 @@ export async function parsePhotoExif(imageInput) {
   }
 
   try {
-    // Extract EXIF tags using exifr with fast header read
+    // 1. Dedicated GPS extraction via exifr.gps() for maximum reliability across devices
+    let latitude = null;
+    let longitude = null;
+    let altitude = null;
+
+    try {
+      const gpsData = await exifr.gps(imageInput);
+      if (gpsData && typeof gpsData.latitude === 'number' && !isNaN(gpsData.latitude)) {
+        latitude = gpsData.latitude;
+        longitude = gpsData.longitude;
+        if (typeof gpsData.altitude === 'number') {
+          altitude = Math.round(gpsData.altitude);
+        }
+      }
+    } catch (gpsErr) {
+      console.warn('Dedicated GPS parse warning:', gpsErr);
+    }
+
+    // 2. Extract full EXIF metadata (camera info, timestamp, settings)
     const rawData = await exifr.parse(imageInput, {
       gps: true,
       exif: true,
-      tiff: true,
-      pick: ['latitude', 'longitude', 'altitude', 'DateTimeOriginal', 'Make', 'Model', 'ISO', 'FNumber', 'ExposureTime', 'FocalLength']
+      tiff: true
     });
 
     // Deep screenshot check using parsed EXIF data
@@ -56,9 +73,6 @@ export async function parsePhotoExif(imageInput) {
       return null;
     }
 
-    let latitude = null;
-    let longitude = null;
-    let altitude = null;
     let date = new Date();
     let cameraMake = 'Camera';
     let cameraModel = 'Smartphone/Camera';
@@ -66,17 +80,18 @@ export async function parsePhotoExif(imageInput) {
     let aperture = null;
 
     if (rawData) {
-      if (typeof rawData.latitude === 'number' && !isNaN(rawData.latitude)) {
+      // Fallback GPS if exifr.gps didn't find it
+      if (latitude === null && typeof rawData.latitude === 'number' && !isNaN(rawData.latitude)) {
         latitude = rawData.latitude;
-      }
-      if (typeof rawData.longitude === 'number' && !isNaN(rawData.longitude)) {
         longitude = rawData.longitude;
       }
-      if (typeof rawData.altitude === 'number') {
+      if (altitude === null && typeof rawData.altitude === 'number') {
         altitude = Math.round(rawData.altitude);
       }
       if (rawData.DateTimeOriginal) {
         date = new Date(rawData.DateTimeOriginal);
+      } else if (rawData.CreateDate) {
+        date = new Date(rawData.CreateDate);
       }
       if (rawData.Make) cameraMake = String(rawData.Make).trim();
       if (rawData.Model) cameraModel = String(rawData.Model).trim();
@@ -84,7 +99,12 @@ export async function parsePhotoExif(imageInput) {
       if (rawData.FNumber) aperture = `f/${rawData.FNumber}`;
     }
 
-    // Generate object URL for preview
+    // Fallback to File.lastModified if no EXIF date
+    if ((!rawData || !rawData.DateTimeOriginal) && imageInput.lastModified) {
+      date = new Date(imageInput.lastModified);
+    }
+
+    // Generate preview URL
     let url = '';
     if (typeof imageInput === 'string') {
       url = imageInput;
@@ -115,7 +135,7 @@ export async function parsePhotoExif(imageInput) {
       cameraModel,
       iso,
       aperture,
-      locationName: '위치 확인 중...'
+      locationName: hasGps ? '위치 확인 중...' : '위치 정보 없음'
     };
   } catch (error) {
     console.warn('EXIF parsing fallback for image:', error);
