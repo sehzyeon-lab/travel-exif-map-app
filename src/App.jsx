@@ -106,34 +106,26 @@ export default function App() {
     doGeocode();
   }, [photos]);
 
-  // Bulk Gallery Import Handler (Unlimited selection + Non-lagging + Screenshot filtering)
-  const handleGalleryPick = async () => {
+  // Bulk Gallery Import Handler (Supports 'Select All' & Preserves EXIF GPS metadata)
+  const handleGalleryPick = () => {
     if (progressState.active) return;
 
-    try {
-      if (Capacitor.isNativePlatform()) {
-        const result = await Camera.pickImages({
-          quality: 85,
-          limit: 5000 // 5000 max images allows selecting all photos in Android Photo Picker
-        });
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.accept = 'image/*';
 
-        if (!result.photos || result.photos.length === 0) return;
+    input.onchange = async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
 
-        setProgressState({ active: true, current: 0, total: result.photos.length });
+      setProgressState({ active: true, current: 0, total: files.length });
 
+      try {
         const newPhotos = await processInChunks(
-          result.photos,
-          6, // 6 parallel workers for fast processing
-          async (img) => {
-            const response = await fetch(img.webPath);
-            const blob = await response.blob();
-            const file = new File(
-              [blob],
-              `photo_${Date.now()}_${Math.random().toString(36).substring(7)}.${img.format || 'jpg'}`,
-              { type: blob.type || 'image/jpeg' }
-            );
-            return await parsePhotoExif(file);
-          },
+          files,
+          6, // 6 parallel workers for smooth 60fps processing
+          async (file) => await parsePhotoExif(file),
           (current, total) => {
             setProgressState({ active: true, current, total });
           }
@@ -142,39 +134,14 @@ export default function App() {
         if (newPhotos.length > 0) {
           setPhotos(prev => [...newPhotos, ...prev]);
         }
-      } else {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.multiple = true;
-        input.accept = 'image/*';
-        input.onchange = async (e) => {
-          const files = Array.from(e.target.files);
-          if (files.length === 0) return;
-
-          setProgressState({ active: true, current: 0, total: files.length });
-
-          const newPhotos = await processInChunks(
-            files,
-            6,
-            async (file) => await parsePhotoExif(file),
-            (current, total) => {
-              setProgressState({ active: true, current, total });
-            }
-          );
-
-          if (newPhotos.length > 0) {
-            setPhotos(prev => [...newPhotos, ...prev]);
-          }
-          setProgressState({ active: false, current: 0, total: 0 });
-        };
-        input.click();
-        return;
+      } catch (err) {
+        console.error("EXIF Bulk Import Error:", err);
+      } finally {
+        setProgressState({ active: false, current: 0, total: 0 });
       }
-    } catch (e) {
-      console.error("Gallery pick error:", e);
-    } finally {
-      setProgressState({ active: false, current: 0, total: 0 });
-    }
+    };
+
+    input.click();
   };
 
   const handleResetData = () => {
