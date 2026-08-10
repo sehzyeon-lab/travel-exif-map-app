@@ -12,7 +12,8 @@ import MapView from './components/MapView';
 import TimelineView from './components/TimelineView';
 import GalleryView from './components/GalleryView';
 import AnalyticsView from './components/AnalyticsView';
-import UpdateModal, { CURRENT_VERSION } from './components/UpdateModal';
+import UpdateModal from './components/UpdateModal';
+import { CURRENT_VERSION } from './releaseNotes';
 
 const tabs = [
   { id: 'map', label: '지도', icon: MapIcon },
@@ -87,7 +88,9 @@ export default function App() {
   const [trips, setTrips] = useState([]);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [mapFocusPhoto, setMapFocusPhoto] = useState(null);
   const [progressState, setProgressState] = useState(IDLE_PROGRESS);
+  const [geocodeProgress, setGeocodeProgress] = useState(IDLE_PROGRESS);
   const [notice, setNotice] = useState(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [hydrated, setHydrated] = useState(false);
@@ -100,6 +103,7 @@ export default function App() {
   const mountedRef = useRef(true);
   const geocodeQueueRef = useRef(new Map());
   const geocodeRunningRef = useRef(false);
+  const geocodeProgressRef = useRef({ current: 0, total: 0 });
 
   useEffect(() => {
     try {
@@ -121,7 +125,7 @@ export default function App() {
         stored.forEach((p) => {
           if (p.locationName && p.locationName !== '위치 확인 중...') geocodedRef.current.add(p.id);
         });
-        setPhotos(stored);
+        setPhotos(stored.sort((a, b) => b.timestamp - a.timestamp));
       }
       setHydrated(true);
     });
@@ -176,6 +180,9 @@ export default function App() {
         if (!mountedRef.current) return;
 
         setPhotos((prev) => prev.map((p) => (ids.has(p.id) ? { ...p, locationName: name } : p)));
+        geocodeProgressRef.current.current += ids.size;
+        const { current, total } = geocodeProgressRef.current;
+        setGeocodeProgress({ active: current < total, current, total, skipped: 0, label: '방문 장소 확인 중...' });
         await new Promise((r) => setTimeout(r, GEOCODE_INTERVAL_MS));
       }
     } finally {
@@ -196,6 +203,9 @@ export default function App() {
       if (!geocodeQueueRef.current.has(cell)) geocodeQueueRef.current.set(cell, new Set());
       geocodeQueueRef.current.get(cell).add(p.id);
     }
+
+    geocodeProgressRef.current = { current: 0, total: pending.length };
+    setGeocodeProgress({ active: true, current: 0, total: pending.length, skipped: 0, label: '방문 장소 확인 중...' });
 
     drainGeocodeQueue();
   }, [photos, drainGeocodeQueue]);
@@ -322,14 +332,36 @@ export default function App() {
     await clearPhotosDB();
   };
 
-  const handleFocusMap = useCallback(() => {
+  const handleFocusMap = useCallback((photo) => {
+    setMapFocusPhoto(photo);
     setSelectedPhoto(null);
     setActiveTab('map');
   }, []);
 
   const handleDeletePhoto = useCallback((photoId) => {
     setPhotos((prev) => prev.filter((p) => p.id !== photoId));
+    setSelectedPhotoIds((prev) => {
+      if (!prev.has(photoId)) return prev;
+      const next = new Set(prev);
+      next.delete(photoId);
+      return next;
+    });
   }, []);
+
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState(() => new Set());
+  const handleToggleSelection = useCallback((photoId) => {
+    setSelectedPhotoIds((prev) => {
+      const next = new Set(prev);
+      next.has(photoId) ? next.delete(photoId) : next.add(photoId);
+      return next;
+    });
+  }, []);
+  const handleDeleteSelected = useCallback(() => {
+    if (selectedPhotoIds.size === 0) return;
+    if (!window.confirm(`선택한 사진 ${selectedPhotoIds.size}장을 삭제할까요?`)) return;
+    setPhotos((prev) => prev.filter((photo) => !selectedPhotoIds.has(photo.id)));
+    setSelectedPhotoIds(new Set());
+  }, [selectedPhotoIds]);
 
   const gpsCount = photos.reduce((n, p) => n + (p.hasGps ? 1 : 0), 0);
 
@@ -414,6 +446,16 @@ export default function App() {
         </div>
       )}
 
+      {!progressState.active && geocodeProgress.active && (
+        <div className="floating-banner">
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}><Loader2 size={14} className="spin-icon" />{geocodeProgress.label}</span>
+            <span style={{ color: 'var(--apple-blue)' }}>{geocodeProgress.current} / {geocodeProgress.total}</span>
+          </div>
+          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}><div style={{ width: `${(geocodeProgress.current / geocodeProgress.total) * 100}%`, height: '100%', background: 'var(--apple-blue)', transition: 'width .2s ease' }} /></div>
+        </div>
+      )}
+
       {notice && !progressState.active && (
         <div className="floating-banner" onClick={() => setNotice(null)}>
           <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '13px', color: '#fff', lineHeight: 1.45 }}>
@@ -428,9 +470,9 @@ export default function App() {
       )}
 
       <div className="content-area">
-        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} />}
+        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} focusPhoto={mapFocusPhoto} />}
         {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={() => setActiveTab('map')} />}
-        {activeTab === 'gallery' && <GalleryView photos={photos} onPhotoSelect={setSelectedPhoto} />}
+        {activeTab === 'gallery' && <GalleryView photos={photos} onPhotoSelect={setSelectedPhoto} selectedIds={selectedPhotoIds} onToggleSelection={handleToggleSelection} onDeleteSelected={handleDeleteSelected} onClearSelection={() => setSelectedPhotoIds(new Set())} />}
         {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} />}
       </div>
 
@@ -456,7 +498,7 @@ export default function App() {
         <ExifModal
           photo={selectedPhoto}
           onClose={() => setSelectedPhoto(null)}
-          onFocusMap={handleFocusMap}
+          onFocusMap={() => handleFocusMap(selectedPhoto)}
           onDeletePhoto={handleDeletePhoto}
         />
       )}

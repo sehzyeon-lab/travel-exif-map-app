@@ -11,26 +11,29 @@ export default function AnalyticsView({ photos = [], trips = [] }) {
     );
   }
 
+  // Only GPS-backed records contribute to travel analytics. Non-location photos remain available
+  // in the gallery, but must not distort place, route, or distance figures.
+  const locationPhotos = photos.filter((p) => p.hasGps);
   const totalTrips = trips ? trips.length : 0;
-  const totalPhotos = photos.length;
+  const totalPhotos = locationPhotos.length;
   
   let totalDistance = 0;
   if (trips) {
     totalDistance = trips.reduce((sum, trip) => sum + (parseFloat(trip.totalDistanceKm) || 0), 0);
   }
   
-  const uniqueLocations = new Set(photos.filter(p => p.locationName).map(p => p.locationName));
+  const uniqueLocations = new Set(locationPhotos.filter(p => p.locationName).map(p => p.locationName));
   const locationCount = uniqueLocations.size;
 
   let maxAltitude = 0;
-  photos.forEach(p => {
+  locationPhotos.forEach(p => {
     if (p.altitude && p.altitude > maxAltitude) {
       maxAltitude = p.altitude;
     }
   });
 
   const cameraCounts = {};
-  photos.forEach(p => {
+  locationPhotos.forEach(p => {
     const make = p.cameraMake || 'Unknown';
     cameraCounts[make] = (cameraCounts[make] || 0) + 1;
   });

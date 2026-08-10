@@ -52,7 +52,9 @@ export function clusterPhotosIntoTrips(photos, maxDistanceKm = 50, maxTimeGapHou
     trips.push(createTripRecord(currentTripPhotos));
   }
 
-  return trips;
+  // The route itself stays time-ascending inside each trip, while the record list presents the
+  // most recent journey first.
+  return trips.reverse();
 }
 
 function createTripRecord(photos) {

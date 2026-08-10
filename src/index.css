@@ -160,10 +160,25 @@ html, body, #root {
   color: var(--text-primary);
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  background: rgba(44, 44, 46, 0.94);
 }
 
 .map-control-btn.active {
   background-color: var(--apple-blue);
+}
+
+.map-legend {
+  position: fixed;
+  left: 16px;
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+  z-index: 500;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(28, 28, 30, 0.88);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 10px;
+  line-height: 1.5;
+  pointer-events: none;
 }
 
 .photo-pin {
@@ -284,6 +299,31 @@ html, body, #root {
   overflow: hidden;
   position: relative;
   background-color: var(--bg-elevated);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.gallery-item.selected::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 3px solid var(--apple-blue);
+  pointer-events: none;
+}
+
+.gallery-selection-check {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  background: var(--apple-blue);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
 }
 
 .gallery-item img,
@@ -666,7 +706,16 @@ html, body, #root {
 
 .gallery-header {
   padding: 16px 16px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
+
+.gallery-selection-actions { display: flex; align-items: center; gap: 8px; }
+.gallery-selection-actions button { border: 0; border-radius: 10px; background: var(--bg-elevated); color: #fff; min-height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.gallery-selection-actions .delete-selection-btn { background: rgba(255, 69, 58, 0.18); color: var(--apple-red); font-size: 13px; font-weight: 600; }
+.gallery-hint { color: var(--text-muted); font-size: 12px; margin: 0; padding: 0 16px 10px; }
 
 .gallery-header h2 {
   font-size: 22px;
@@ -777,3 +826,5 @@ html, body, #root {
   border: none !important;
 }
 
+.travel-marker-cluster { background: transparent !important; }
+.marker-cluster-count { width: 42px; height: 42px; border-radius: 21px; border: 3px solid rgba(255,255,255,.9); background: var(--apple-blue); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; box-shadow: 0 3px 10px rgba(0,0,0,.35); }
