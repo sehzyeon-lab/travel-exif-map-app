@@ -1,8 +1,15 @@
 import React from 'react';
-import { MapPin, Calendar, Camera, Compass, Aperture, X } from 'lucide-react';
+import { MapPin, Calendar, Camera, Compass, Aperture, X, Trash2 } from 'lucide-react';
 
-export default function ExifModal({ photo, onClose, onFocusMap }) {
+export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto }) {
   if (!photo) return null;
+
+  const handleDelete = () => {
+    if (window.confirm(`'${photo.name}' 사진을 삭제하시겠습니까?`)) {
+      if (onDeletePhoto) onDeletePhoto(photo.id);
+      onClose();
+    }
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -26,16 +33,40 @@ export default function ExifModal({ photo, onClose, onFocusMap }) {
         </div>
 
         <div style={{ padding: '20px 16px' }}>
-          <div style={{ marginBottom: '20px' }}>
-            <h3 className="text-truncate" style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: '600', color: '#FFF' }}>
-              {photo.name}
-            </h3>
-            {photo.locationName && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-muted)', fontSize: '13px' }}>
-                <MapPin size={14} />
-                <span className="text-truncate">{photo.locationName}</span>
-              </div>
-            )}
+          <div style={{ marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, minWidth: 0, paddingRight: '12px' }}>
+              <h3 className="text-truncate" style={{ margin: '0 0 4px 0', fontSize: '18px', fontWeight: '600', color: '#FFF' }}>
+                {photo.name}
+              </h3>
+              {photo.locationName && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px', color: 'var(--text-muted)', fontSize: '13px' }}>
+                  <MapPin size={14} />
+                  <span className="text-truncate">{photo.locationName}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Individual Photo Delete Button */}
+            <button
+              onClick={handleDelete}
+              style={{
+                background: 'rgba(255, 69, 58, 0.15)',
+                border: 'none',
+                borderRadius: '10px',
+                padding: '8px 12px',
+                color: 'var(--apple-red)',
+                fontSize: '13px',
+                fontWeight: 600,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                cursor: 'pointer',
+                flexShrink: 0
+              }}
+            >
+              <Trash2 size={14} />
+              삭제
+            </button>
           </div>
 
           <div className="modal-meta-grid">

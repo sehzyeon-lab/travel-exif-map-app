@@ -19,7 +19,7 @@ const tabs = [
   { id: 'analytics', label: '통계', icon: BarChart3 }
 ];
 
-// Process items in parallel chunks to prevent UI blocking
+// Process items in parallel chunks to prevent UI blocking (optimized for 2000+ photos)
 async function processInChunks(items, chunkSize, fn, onProgress) {
   const results = [];
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -38,7 +38,7 @@ async function processInChunks(items, chunkSize, fn, onProgress) {
     if (onProgress) {
       onProgress(Math.min(i + chunkSize, items.length), items.length);
     }
-    // Yield execution to main thread for 16ms (1 frame) so UI stays 60fps
+    // Yield execution to main thread for 16ms so UI stays responsive
     await new Promise(r => setTimeout(r, 16));
   }
   return results;
@@ -95,7 +95,6 @@ export default function App() {
         } catch (e) {
           updates[p.id] = `${p.latitude.toFixed(2)}°, ${p.longitude.toFixed(2)}°`;
         }
-        // Brief pause between requests to respect OpenStreetMap rate limits
         await new Promise(r => setTimeout(r, 300));
       }
       
@@ -107,16 +106,15 @@ export default function App() {
     doGeocode();
   }, [photos]);
 
-  // Bulk Gallery Import Handler (Unlimited selection + Non-lagging parallel processing)
+  // Bulk Gallery Import Handler (Unlimited selection + Non-lagging + Screenshot filtering)
   const handleGalleryPick = async () => {
     if (progressState.active) return;
 
     try {
       if (Capacitor.isNativePlatform()) {
-        // Native: limit: 0 enables unlimited multi-select in system photo picker
         const result = await Camera.pickImages({
           quality: 85,
-          limit: 0
+          limit: 0 // 0 = unlimited multi-select in system picker
         });
 
         if (!result.photos || result.photos.length === 0) return;
@@ -125,7 +123,7 @@ export default function App() {
 
         const newPhotos = await processInChunks(
           result.photos,
-          5, // 5 parallel workers
+          6, // 6 parallel workers for fast processing
           async (img) => {
             const response = await fetch(img.webPath);
             const blob = await response.blob();
@@ -145,7 +143,6 @@ export default function App() {
           setPhotos(prev => [...newPhotos, ...prev]);
         }
       } else {
-        // Web fallback: file input with multiple selection
         const input = document.createElement('input');
         input.type = 'file';
         input.multiple = true;
@@ -158,7 +155,7 @@ export default function App() {
 
           const newPhotos = await processInChunks(
             files,
-            5,
+            6,
             async (file) => await parsePhotoExif(file),
             (current, total) => {
               setProgressState({ active: true, current, total });
@@ -191,6 +188,14 @@ export default function App() {
   const handleFocusMap = useCallback((photo) => {
     setSelectedPhoto(null);
     setActiveTab('map');
+  }, []);
+
+  const handleDeletePhoto = useCallback((photoId) => {
+    setPhotos(prev => {
+      const next = prev.filter(p => p.id !== photoId);
+      savePhotosToDB(next);
+      return next;
+    });
   }, []);
 
   return (
@@ -236,7 +241,7 @@ export default function App() {
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '6px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-              사진 분석 중...
+              사진 분석 중... (스크린샷 자동 제외)
             </span>
             <span style={{ color: 'var(--apple-blue)' }}>
               {progressState.current} / {progressState.total} 장 ({Math.round((progressState.current / progressState.total) * 100)}%)
@@ -285,6 +290,7 @@ export default function App() {
           photo={selectedPhoto}
           onClose={() => setSelectedPhoto(null)}
           onFocusMap={handleFocusMap}
+          onDeletePhoto={handleDeletePhoto}
         />
       )}
     </div>
