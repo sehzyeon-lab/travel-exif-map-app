@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2, Sparkles } from 'lucide-react';
+import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2, RefreshCw, FolderSearch } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
+import { scanDeviceCameraFolder } from './utils/autoScanner';
 
 import ExifModal from './components/ExifModal';
 import MapView from './components/MapView';
@@ -19,7 +20,6 @@ const tabs = [
   { id: 'analytics', label: '통계', icon: BarChart3 }
 ];
 
-// Ultra-fast parallel chunk processor (12 workers, 10x speed boost)
 async function processInChunks(items, chunkSize, fn, onProgress) {
   const results = [];
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -48,14 +48,15 @@ export default function App() {
   const [trips, setTrips] = useState([]);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
-  const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0, skipped: 0 });
+  const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0, skipped: 0, label: '사진 분석 중...' });
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  
+  const [hasAutoScanned, setHasAutoScanned] = useState(false);
+
   const geocodedRef = useRef(new Set());
   const existingFingerprintsRef = useRef(new Set());
   const fileInputRef = useRef(null);
 
-  // Check for app update release notes on startup
+  // Check update release notes on startup
   useEffect(() => {
     try {
       const seenVersion = localStorage.getItem('seen_app_version');
@@ -72,7 +73,7 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Keep track of existing fingerprints for instant deduplication
+  // Keep track of existing fingerprints
   useEffect(() => {
     const set = new Set();
     photos.forEach(p => {
@@ -82,7 +83,7 @@ export default function App() {
     existingFingerprintsRef.current = set;
   }, [photos]);
 
-  // Load photos from IndexedDB on mount
+  // Load stored photos from IndexedDB on mount
   useEffect(() => {
     loadPhotosFromDB().then((stored) => {
       if (stored && stored.length > 0) {
@@ -104,7 +105,7 @@ export default function App() {
     setTrips(clusterPhotosIntoTrips(photos));
   }, [photos]);
 
-  // Reverse geocode missing locations in background without freezing
+  // Background reverse geocoding
   useEffect(() => {
     const toGeocode = photos.filter(
       p => p.hasGps && p.latitude && p.longitude &&
@@ -136,11 +137,62 @@ export default function App() {
     doGeocode();
   }, [photos]);
 
-  // High-Speed Bulk Gallery Import Handler via DOM File Input (100% Android WebView Compatible)
+  // Automatic Device Camera Folder Scanner Function
+  const handleAutoScanGallery = async () => {
+    if (progressState.active) return;
+
+    setProgressState({ active: true, current: 0, total: 0, skipped: 0, label: '⚡ 폰 갤러리 앨범 자동 검색 중...' });
+
+    try {
+      const scannedPhotos = await scanDeviceCameraFolder((current, total) => {
+        setProgressState({
+          active: true,
+          current,
+          total,
+          skipped: 0,
+          label: '⚡ 폰 갤러리 사진 초고속 분석 중...'
+        });
+      });
+
+      if (scannedPhotos && scannedPhotos.length > 0) {
+        setPhotos(prev => {
+          const updatedMap = new Map();
+          scannedPhotos.forEach(p => {
+            const key = p.fingerprint || p.name;
+            if (key) updatedMap.set(key, p);
+          });
+          prev.forEach(p => {
+            const key = p.fingerprint || p.name;
+            if (key && !updatedMap.has(key)) {
+              updatedMap.set(key, p);
+            }
+          });
+          return Array.from(updatedMap.values());
+        });
+      } else if (!Capacitor.isNativePlatform()) {
+        // Fallback to file input on web if not native
+        handleGalleryPick();
+      }
+    } catch (err) {
+      console.error("Auto scan error:", err);
+    } finally {
+      setProgressState({ active: false, current: 0, total: 0, skipped: 0, label: '' });
+      setHasAutoScanned(true);
+    }
+  };
+
+  // Automatic scan on native app launch if empty
+  useEffect(() => {
+    if (Capacitor.isNativePlatform() && !hasAutoScanned && photos.length === 0) {
+      handleAutoScanGallery();
+    }
+  }, [photos, hasAutoScanned]);
+
+  // File Input Handler (Fallback)
   const handleGalleryPick = () => {
     if (progressState.active) return;
     if (fileInputRef.current) {
-      fileInputRef.current.value = null; // Reset value to ensure re-selection triggers onChange
+      fileInputRef.current.value = null;
       fileInputRef.current.click();
     }
   };
@@ -149,7 +201,6 @@ export default function App() {
     const rawFiles = Array.from(e.target.files || []);
     if (rawFiles.length === 0) return;
 
-    // 1. Instant Deduplication Check: Skip duplicates ONLY if they already have valid GPS data
     const existingMap = new Map();
     photos.forEach(p => {
       if (p.fingerprint) existingMap.set(p.fingerprint, p);
@@ -163,7 +214,6 @@ export default function App() {
       const fp = getPhotoFingerprint(file);
       const existingPhoto = existingMap.get(fp) || existingMap.get(file.name);
       
-      // If photo already exists AND has valid GPS data, skip it
       if (existingPhoto && existingPhoto.hasGps) {
         skippedCount++;
       } else {
@@ -172,14 +222,13 @@ export default function App() {
     }
 
     if (newFiles.length === 0) {
-      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 위치 정보와 함께 저장되어 있어 제외되었습니다.`);
+      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 저장되어 있어 제외되었습니다.`);
       return;
     }
 
-    setProgressState({ active: true, current: 0, total: newFiles.length, skipped: skippedCount });
+    setProgressState({ active: true, current: 0, total: newFiles.length, skipped: skippedCount, label: '사진 분석 중...' });
 
     try {
-      // 2. Ultra-Fast Parallel Header Processing (12 workers)
       const parsedPhotos = await processInChunks(
         newFiles,
         12,
@@ -192,12 +241,10 @@ export default function App() {
       if (parsedPhotos.length > 0) {
         setPhotos(prev => {
           const updatedMap = new Map();
-          // Insert newly parsed fresh photos first
           parsedPhotos.forEach(p => {
             const key = p.fingerprint || p.name;
             if (key) updatedMap.set(key, p);
           });
-          // Preserve existing photos if not replaced by fresh version
           prev.forEach(p => {
             const key = p.fingerprint || p.name;
             if (key && !updatedMap.has(key)) {
@@ -210,7 +257,7 @@ export default function App() {
     } catch (err) {
       console.error("EXIF Bulk Import Error:", err);
     } finally {
-      setProgressState({ active: false, current: 0, total: 0, skipped: 0 });
+      setProgressState({ active: false, current: 0, total: 0, skipped: 0, label: '' });
     }
   };
 
@@ -238,7 +285,6 @@ export default function App() {
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#000' }}>
-      {/* Hidden File Input mounted directly in DOM for 100% Android WebView compatibility */}
       <input
         ref={fileInputRef}
         type="file"
@@ -248,7 +294,7 @@ export default function App() {
         onChange={handleFileInputChange}
       />
 
-      {/* Top Header */}
+      {/* Header */}
       <header className="header glass-surface">
         <div className="header-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span>여행 기록</span>
@@ -264,29 +310,31 @@ export default function App() {
               <Trash2 size={18} />
             </button>
           )}
+          
+          {/* Automatic Camera Folder Scan Button */}
           <button
             className="header-btn"
-            onClick={handleGalleryPick}
+            onClick={handleAutoScanGallery}
             disabled={progressState.active}
             style={{ background: 'var(--apple-blue)', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 12px', width: 'auto', borderRadius: '18px' }}
-            aria-label="사진 추가"
+            aria-label="갤러리 자동 스캔"
           >
             {progressState.active ? (
               <>
                 <Loader2 size={16} className="spin-icon" />
-                <span style={{ fontSize: '13px', fontWeight: 600 }}>분석 중</span>
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>스캔 중</span>
               </>
             ) : (
               <>
-                <Plus size={16} />
-                <span style={{ fontSize: '13px', fontWeight: 600 }}>사진 추가</span>
+                <FolderSearch size={16} />
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>갤러리 자동 스캔</span>
               </>
             )}
           </button>
         </div>
       </header>
 
-      {/* Progress Toast Banner when importing bulk photos */}
+      {/* Progress Toast Banner */}
       {progressState.active && (
         <div style={{
           position: 'fixed',
@@ -306,26 +354,30 @@ export default function App() {
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-              고속 초당 50장 분석 중...
+              {progressState.label || '사진 분석 중...'}
             </span>
-            <span style={{ color: 'var(--apple-blue)' }}>
-              {progressState.current} / {progressState.total} 장 ({Math.round((progressState.current / progressState.total) * 100)}%)
-            </span>
+            {progressState.total > 0 && (
+              <span style={{ color: 'var(--apple-blue)' }}>
+                {progressState.current} / {progressState.total} 장 ({Math.round((progressState.current / progressState.total) * 100)}%)
+              </span>
+            )}
           </div>
           {progressState.skipped > 0 && (
             <div style={{ fontSize: '11px', color: 'rgba(235,235,245,0.6)', marginBottom: '6px' }}>
               ℹ️ 중복/스크린샷 {progressState.skipped}장 자동 제외됨
             </div>
           )}
-          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
-            <div style={{
-              width: `${(progressState.current / progressState.total) * 100}%`,
-              height: '100%',
-              background: 'var(--apple-blue)',
-              borderRadius: '2px',
-              transition: 'width 0.2s ease'
-            }} />
-          </div>
+          {progressState.total > 0 && (
+            <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+              <div style={{
+                width: `${(progressState.current / progressState.total) * 100}%`,
+                height: '100%',
+                background: 'var(--apple-blue)',
+                borderRadius: '2px',
+                transition: 'width 0.2s ease'
+              }} />
+            </div>
+          )}
         </div>
       )}
 
