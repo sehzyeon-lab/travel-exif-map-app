@@ -1,0 +1,9 @@
+{
+  "appId": "com.beyondintuition.travelexifmap",
+  "appName": "여행 기록 맵",
+  "webDir": "dist",
+  "server": {
+    "url": "https://sprightly-stroopwafel-ef49ee.netlify.app/",
+    "cleartext": true
+  }
+}

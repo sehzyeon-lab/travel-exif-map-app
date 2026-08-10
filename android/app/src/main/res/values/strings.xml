@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">여행 기록 맵 (Travel EXIF Log)</string>
+    <string name="title_activity_main">여행 기록 맵 (Travel EXIF Log)</string>
+    <string name="package_name">com.beyondintuition.travelexifmap</string>
+    <string name="custom_url_scheme">com.beyondintuition.travelexifmap</string>
+</resources>
