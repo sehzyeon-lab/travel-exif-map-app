@@ -3,7 +3,7 @@
   "appName": "여행 기록 맵",
   "webDir": "dist",
   "server": {
-    "url": "https://sprightly-stroopwafel-ef49ee.netlify.app/",
+    "url": "https://travel-exif-map-app.vercel.app/",
     "cleartext": true
   }
 }
