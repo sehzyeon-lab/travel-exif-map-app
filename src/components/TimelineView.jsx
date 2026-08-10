@@ -1,5 +1,6 @@
 import React from 'react';
-import { Calendar, MapPin, Navigation, Camera, Compass } from 'lucide-react';
+import { Calendar, Navigation, Camera, Compass } from 'lucide-react';
+import PhotoImage from './PhotoImage';
 
 export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnMap }) {
   if (!trips || trips.length === 0) {
@@ -22,8 +23,8 @@ export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnM
         {trips.map(trip => (
           <div key={trip.id} className="trip-card">
             <div className="trip-card-header" onClick={() => onFocusTripOnMap && onFocusTripOnMap(trip)}>
-              {trip.coverPhotoUrl && (
-                <img src={trip.coverPhotoUrl} alt="cover" className="trip-card-cover" />
+              {trip.coverPhoto && (
+                <PhotoImage photo={trip.coverPhoto} alt="cover" className="trip-card-cover" />
               )}
               <div className="trip-card-info">
                 <h3 className="truncate">{trip.title}</h3>
@@ -38,11 +39,11 @@ export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnM
             
             {trip.photos && trip.photos.length > 0 && (
               <div className="trip-photos-strip">
-                {trip.photos.slice(0, 6).map((photo, idx) => (
-                  <img 
-                    key={idx} 
-                    src={photo.url} 
-                    alt="thumbnail" 
+                {trip.photos.slice(0, 6).map((photo) => (
+                  <PhotoImage
+                    key={photo.id}
+                    photo={photo}
+                    alt="thumbnail"
                     className="strip-thumb"
                     onClick={() => onPhotoSelect && onPhotoSelect(photo)}
                   />

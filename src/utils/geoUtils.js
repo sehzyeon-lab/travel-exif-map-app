@@ -75,14 +75,15 @@ function createTripRecord(photos) {
   const durationDays = Math.max(1, Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)));
 
   return {
-    id: 'trip_' + Math.random().toString(36).substr(2, 9),
+    // Derived from the first photo so re-clustering keeps stable React keys.
+    id: 'trip_' + photos[0].id,
     title: photos[0].locationName !== '위치 확인 중...' ? photos[0].locationName + ' 여행' : '추억의 여행',
     startDateFormatted: startDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' }),
     endDateFormatted: endDate.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric' }),
     durationDays,
     totalDistanceKm: Math.round(totalDistance * 10) / 10,
     photoCount: photos.length,
-    coverPhotoUrl: photos[0].url,
+    coverPhoto: photos[0],
     photos,
     centerLat: avgLat,
     centerLng: avgLng
@@ -94,8 +95,13 @@ function createTripRecord(photos) {
  */
 const geocodeCache = new Map();
 
+/** ~1km grid cell. Photos sharing a cell resolve to the same place name and one lookup. */
+export function geocodeKey(lat, lng) {
+  return `${lat.toFixed(2)},${lng.toFixed(2)}`;
+}
+
 export async function reverseGeocode(lat, lng) {
-  const key = `${lat.toFixed(3)},${lng.toFixed(3)}`;
+  const key = geocodeKey(lat, lng);
   if (geocodeCache.has(key)) {
     return geocodeCache.get(key);
   }

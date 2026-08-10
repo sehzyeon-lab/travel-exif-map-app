@@ -2,6 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Layers, Route, Maximize2, Compass } from 'lucide-react';
+import { getThumbnail } from '../utils/mediaStore';
+
+const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
 export default function MapView({ photos = [], trips = [], onPhotoSelect }) {
   const mapRef = useRef(null);
@@ -74,8 +77,10 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect }) {
       });
     }
     
+    let cancelled = false;
+
     validPhotos.forEach((photo, idx) => {
-      const safeUrl = String(photo.url || '').replace(/"/g, '&quot;');
+      const safeUrl = String(photo.url || TRANSPARENT_PIXEL).replace(/"/g, '&quot;');
       const iconHtml = `<div class="photo-pin"><img src="${safeUrl}" alt="" /><div class="pin-badge">${idx+1}</div></div>`;
       const customIcon = L.divIcon({
         html: iconHtml,
@@ -83,15 +88,26 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect }) {
         iconSize: [44, 44],
         iconAnchor: [22, 22]
       });
-      
+
       const marker = L.marker([photo.latitude, photo.longitude], { icon: customIcon })
         .addTo(map)
         .on('click', () => {
           if (onPhotoSelect) onPhotoSelect(photo);
         });
-        
+
       markersRef.current.push(marker);
+
+      // Native photos have no URL — fill the pin in once its thumbnail arrives.
+      if (!photo.url && photo.mediaId) {
+        getThumbnail(photo.mediaId).then((dataUrl) => {
+          if (cancelled || !dataUrl) return;
+          const img = marker.getElement()?.querySelector('img');
+          if (img) img.src = dataUrl;
+        }).catch(() => {});
+      }
     });
+
+    return () => { cancelled = true; };
   }, [photos, trips, showRoutes, isDark, onPhotoSelect]);
 
   const fitBounds = () => {
@@ -100,31 +116,36 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect }) {
     mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] });
   };
 
-  if (validPhotos.length === 0) {
-    return (
-      <div className="map-empty-state">
-        <div className="glass-surface">
-          <Compass size={48} className="empty-icon" />
-          <p>지도에 표시할 위치 정보가 없습니다.</p>
-        </div>
-      </div>
-    );
-  }
+  // The container stays mounted even with nothing to show: the init effect runs once, so
+  // swapping it out for an empty state would leave the map uninitialised when photos arrive.
+  const isEmpty = validPhotos.length === 0;
 
   return (
     <div className="map-view-container">
       <div ref={mapRef} className="map-full-screen" />
-      <div className="map-floating-controls">
-        <button className="map-control-btn" onClick={() => setIsDark(!isDark)}>
-          <Layers size={20} />
-        </button>
-        <button className="map-control-btn" onClick={() => setShowRoutes(!showRoutes)}>
-          <Route size={20} color={showRoutes ? '#007AFF' : 'currentColor'} />
-        </button>
-        <button className="map-control-btn" onClick={fitBounds}>
-          <Maximize2 size={20} />
-        </button>
-      </div>
+
+      {isEmpty && (
+        <div className="map-empty-state map-empty-overlay">
+          <div className="glass-surface">
+            <Compass size={48} className="empty-icon" />
+            <p>지도에 표시할 위치 정보가 없습니다.</p>
+          </div>
+        </div>
+      )}
+
+      {!isEmpty && (
+        <div className="map-floating-controls">
+          <button className="map-control-btn" onClick={() => setIsDark(!isDark)}>
+            <Layers size={20} />
+          </button>
+          <button className="map-control-btn" onClick={() => setShowRoutes(!showRoutes)}>
+            <Route size={20} color={showRoutes ? '#007AFF' : 'currentColor'} />
+          </button>
+          <button className="map-control-btn" onClick={fitBounds}>
+            <Maximize2 size={20} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

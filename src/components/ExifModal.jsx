@@ -1,5 +1,6 @@
 import React from 'react';
 import { MapPin, Calendar, Camera, Compass, Aperture, X, Trash2 } from 'lucide-react';
+import PhotoImage from './PhotoImage';
 
 export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto }) {
   if (!photo) return null;
@@ -17,7 +18,7 @@ export default function ExifModal({ photo, onClose, onFocusMap, onDeletePhoto })
         <div className="modal-handle" />
         
         <div style={{ position: 'relative' }}>
-          <img src={photo.url} alt={photo.name} className="modal-photo" />
+          <PhotoImage photo={photo} alt={photo.name} className="modal-photo" full />
           <button 
             onClick={onClose}
             style={{ 

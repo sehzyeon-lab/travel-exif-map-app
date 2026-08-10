@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Capacitor } from '@capacitor/core';
-import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2, RefreshCw, FolderSearch } from 'lucide-react';
+// `Map` is aliased: the unaliased icon name shadows the global Map constructor in this module.
+import { Map as MapIcon, Clock, Image as ImageIcon, BarChart3, Trash2, Loader2, FolderSearch, AlertTriangle } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
-import { clusterPhotosIntoTrips, reverseGeocode } from './utils/geoUtils';
+import { clusterPhotosIntoTrips, reverseGeocode, geocodeKey } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
-import { scanDeviceCameraFolder } from './utils/autoScanner';
+import { scanDeviceGallery } from './utils/autoScanner';
+import { isNative, checkMediaAccess, MediaAccessError, clearThumbnailMemoryCache } from './utils/mediaStore';
 
 import ExifModal from './components/ExifModal';
 import MapView from './components/MapView';
@@ -14,11 +15,32 @@ import AnalyticsView from './components/AnalyticsView';
 import UpdateModal, { CURRENT_VERSION } from './components/UpdateModal';
 
 const tabs = [
-  { id: 'map', label: '지도', icon: Map },
+  { id: 'map', label: '지도', icon: MapIcon },
   { id: 'timeline', label: '기록', icon: Clock },
   { id: 'gallery', label: '갤러리', icon: ImageIcon },
   { id: 'analytics', label: '통계', icon: BarChart3 }
 ];
+
+const IDLE_PROGRESS = { active: false, current: 0, total: 0, skipped: 0, label: '' };
+
+/** Nominatim's usage policy allows ~1 request per second. */
+const GEOCODE_INTERVAL_MS = 1100;
+
+const LAST_SCAN_KEY = 'travel_last_scan_at';
+
+function readLastScanAt() {
+  try {
+    return Number(localStorage.getItem(LAST_SCAN_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLastScanAt(value) {
+  try {
+    if (value) localStorage.setItem(LAST_SCAN_KEY, String(value));
+  } catch {}
+}
 
 async function processInChunks(items, chunkSize, fn, onProgress) {
   const results = [];
@@ -35,12 +57,29 @@ async function processInChunks(items, chunkSize, fn, onProgress) {
       })
     );
     results.push(...chunkResults.filter(Boolean));
-    if (onProgress) {
-      onProgress(Math.min(i + chunkSize, items.length), items.length);
-    }
-    await new Promise(r => setTimeout(r, 16));
+    onProgress?.(Math.min(i + chunkSize, items.length), items.length);
+    await new Promise((r) => setTimeout(r, 16));
   }
   return results;
+}
+
+/** Merges freshly scanned photos over the existing set, keyed by fingerprint. */
+function mergePhotos(existing, incoming) {
+  const byKey = new Map();
+  for (const photo of existing) {
+    const key = photo.fingerprint || photo.name;
+    if (key) byKey.set(key, photo);
+  }
+  for (const photo of incoming) {
+    const key = photo.fingerprint || photo.name;
+    if (!key) continue;
+    const prev = byKey.get(key);
+    // Keep an already-resolved place name so the merge doesn't undo geocoding.
+    byKey.set(key, prev?.locationName && prev.locationName !== '위치 확인 중...'
+      ? { ...photo, id: prev.id, locationName: prev.locationName }
+      : photo);
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.timestamp - a.timestamp);
 }
 
 export default function App() {
@@ -48,240 +87,251 @@ export default function App() {
   const [trips, setTrips] = useState([]);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
-  const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0, skipped: 0, label: '사진 분석 중...' });
+  const [progressState, setProgressState] = useState(IDLE_PROGRESS);
+  const [notice, setNotice] = useState(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [hasAutoScanned, setHasAutoScanned] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
 
   const geocodedRef = useRef(new Set());
-  const existingFingerprintsRef = useRef(new Set());
   const fileInputRef = useRef(null);
+  const scanningRef = useRef(false);
+  const autoScanDoneRef = useRef(false);
+  const saveTimerRef = useRef(null);
+  const mountedRef = useRef(true);
+  const geocodeQueueRef = useRef(new Map());
+  const geocodeRunningRef = useRef(false);
 
-  // Check update release notes on startup
   useEffect(() => {
     try {
-      const seenVersion = localStorage.getItem('seen_app_version');
-      if (seenVersion !== CURRENT_VERSION) {
-        setShowUpdateModal(true);
-      }
-    } catch (e) {}
+      if (localStorage.getItem('seen_app_version') !== CURRENT_VERSION) setShowUpdateModal(true);
+    } catch {}
   }, []);
 
   const handleCloseUpdateModal = () => {
     setShowUpdateModal(false);
     try {
       localStorage.setItem('seen_app_version', CURRENT_VERSION);
-    } catch (e) {}
+    } catch {}
   };
 
-  // Keep track of existing fingerprints
-  useEffect(() => {
-    const set = new Set();
-    photos.forEach(p => {
-      if (p.fingerprint) set.add(p.fingerprint);
-      if (p.name) set.add(p.name);
-    });
-    existingFingerprintsRef.current = set;
-  }, [photos]);
-
-  // Load stored photos from IndexedDB on mount
+  // Load persisted photos
   useEffect(() => {
     loadPhotosFromDB().then((stored) => {
-      if (stored && stored.length > 0) {
-        setPhotos(stored);
-        stored.forEach(p => {
-          if (p.locationName && p.locationName !== '위치 확인 중...') {
-            geocodedRef.current.add(p.id);
-          }
+      if (stored.length > 0) {
+        stored.forEach((p) => {
+          if (p.locationName && p.locationName !== '위치 확인 중...') geocodedRef.current.add(p.id);
         });
+        setPhotos(stored);
       }
+      setHydrated(true);
     });
   }, []);
 
-  // Save photos to IndexedDB & recompute trips
+  // Recompute trips immediately, persist on a trailing debounce (a full rewrite of thousands of
+  // records on every geocode tick would thrash IndexedDB).
   useEffect(() => {
-    if (photos.length > 0) {
-      savePhotosToDB(photos);
-    }
     setTrips(clusterPhotosIntoTrips(photos));
-  }, [photos]);
+    if (!hydrated) return;
 
-  // Background reverse geocoding
+    clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      savePhotosToDB(photos).catch((e) => console.warn('Save failed:', e));
+      // Shorter than GEOCODE_INTERVAL_MS so a long geocoding run can't keep postponing the save.
+    }, 800);
+
+    return () => clearTimeout(saveTimerRef.current);
+  }, [photos, hydrated]);
+
+  // Reassigned on mount, not just cleared on unmount, so StrictMode's double-invoke in dev doesn't
+  // leave the flag stuck at false.
   useEffect(() => {
-    const toGeocode = photos.filter(
-      p => p.hasGps && p.latitude && p.longitude &&
-      (!p.locationName || p.locationName === '위치 확인 중...') &&
-      !geocodedRef.current.has(p.id)
-    );
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
-    if (toGeocode.length === 0) return;
-
-    toGeocode.forEach(p => geocodedRef.current.add(p.id));
-
-    const doGeocode = async () => {
-      const updates = {};
-      for (const p of toGeocode) {
-        try {
-          const name = await reverseGeocode(p.latitude, p.longitude);
-          updates[p.id] = name;
-        } catch (e) {
-          updates[p.id] = `${p.latitude.toFixed(2)}°, ${p.longitude.toFixed(2)}°`;
-        }
-        await new Promise(r => setTimeout(r, 250));
-      }
-      
-      setPhotos(prev => prev.map(p => 
-        updates[p.id] ? { ...p, locationName: updates[p.id] } : p
-      ));
-    };
-
-    doGeocode();
-  }, [photos]);
-
-  // Automatic Device Camera Folder Scanner Function
-  const handleAutoScanGallery = async () => {
-    if (progressState.active) return;
-
-    setProgressState({ active: true, current: 0, total: 0, skipped: 0, label: '⚡ 폰 갤러리 앨범 자동 검색 중...' });
+  /**
+   * Background reverse geocoding, deduplicated by ~1km grid cell so a 2000-photo trip costs a
+   * handful of requests instead of 2000.
+   *
+   * The worker deliberately lives outside the effect's lifecycle: it writes results back with
+   * setPhotos, which re-runs this effect, so an effect-scoped loop would abort itself after the
+   * very first lookup.
+   */
+  const drainGeocodeQueue = useCallback(async () => {
+    if (geocodeRunningRef.current) return;
+    geocodeRunningRef.current = true;
 
     try {
-      const scannedPhotos = await scanDeviceCameraFolder((current, total) => {
-        setProgressState({
-          active: true,
-          current,
-          total,
-          skipped: 0,
-          label: '⚡ 폰 갤러리 사진 초고속 분석 중...'
-        });
-      });
+      while (geocodeQueueRef.current.size > 0 && mountedRef.current) {
+        const [cell, ids] = geocodeQueueRef.current.entries().next().value;
+        geocodeQueueRef.current.delete(cell);
 
-      if (scannedPhotos && scannedPhotos.length > 0) {
-        setPhotos(prev => {
-          const updatedMap = new Map();
-          scannedPhotos.forEach(p => {
-            const key = p.fingerprint || p.name;
-            if (key) updatedMap.set(key, p);
-          });
-          prev.forEach(p => {
-            const key = p.fingerprint || p.name;
-            if (key && !updatedMap.has(key)) {
-              updatedMap.set(key, p);
-            }
-          });
-          return Array.from(updatedMap.values());
-        });
-      } else if (!Capacitor.isNativePlatform()) {
-        // Fallback to file input on web if not native
-        handleGalleryPick();
+        const [lat, lng] = cell.split(',').map(Number);
+        let name;
+        try {
+          name = await reverseGeocode(lat, lng);
+        } catch {
+          name = `${lat.toFixed(2)}°, ${lng.toFixed(2)}°`;
+        }
+        if (!mountedRef.current) return;
+
+        setPhotos((prev) => prev.map((p) => (ids.has(p.id) ? { ...p, locationName: name } : p)));
+        await new Promise((r) => setTimeout(r, GEOCODE_INTERVAL_MS));
       }
-    } catch (err) {
-      console.error("Auto scan error:", err);
     } finally {
-      setProgressState({ active: false, current: 0, total: 0, skipped: 0, label: '' });
-      setHasAutoScanned(true);
+      geocodeRunningRef.current = false;
     }
-  };
+  }, []);
 
-  // Automatic scan on native app launch if empty
   useEffect(() => {
-    if (Capacitor.isNativePlatform() && !hasAutoScanned && photos.length === 0) {
-      handleAutoScanGallery();
-    }
-  }, [photos, hasAutoScanned]);
+    const pending = photos.filter(
+      (p) => p.hasGps && !geocodedRef.current.has(p.id) &&
+        (!p.locationName || p.locationName === '위치 확인 중...')
+    );
+    if (pending.length === 0) return;
 
-  // File Input Handler (Fallback)
-  const handleGalleryPick = () => {
-    if (progressState.active) return;
-    if (fileInputRef.current) {
-      fileInputRef.current.value = null;
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleFileInputChange = async (e) => {
-    const rawFiles = Array.from(e.target.files || []);
-    if (rawFiles.length === 0) return;
-
-    const existingMap = new Map();
-    photos.forEach(p => {
-      if (p.fingerprint) existingMap.set(p.fingerprint, p);
-      if (p.name) existingMap.set(p.name, p);
-    });
-
-    let skippedCount = 0;
-    const newFiles = [];
-
-    for (const file of rawFiles) {
-      const fp = getPhotoFingerprint(file);
-      const existingPhoto = existingMap.get(fp) || existingMap.get(file.name);
-      
-      if (existingPhoto && existingPhoto.hasGps) {
-        skippedCount++;
-      } else {
-        newFiles.push(file);
-      }
+    for (const p of pending) {
+      geocodedRef.current.add(p.id);
+      const cell = geocodeKey(p.latitude, p.longitude);
+      if (!geocodeQueueRef.current.has(cell)) geocodeQueueRef.current.set(cell, new Set());
+      geocodeQueueRef.current.get(cell).add(p.id);
     }
 
-    if (newFiles.length === 0) {
-      alert(`선택한 ${rawFiles.length}장의 사진이 모두 이미 저장되어 있어 제외되었습니다.`);
+    drainGeocodeQueue();
+  }, [photos, drainGeocodeQueue]);
+
+  const handleScanGallery = useCallback(async ({ incremental = false } = {}) => {
+    if (scanningRef.current) return;
+
+    if (!isNative()) {
+      // Browser has no MediaStore — fall back to the file picker.
+      fileInputRef.current?.click();
       return;
     }
 
-    setProgressState({ active: true, current: 0, total: newFiles.length, skipped: skippedCount, label: '사진 분석 중...' });
+    scanningRef.current = true;
+    setNotice(null);
+    setProgressState({ active: true, current: 0, total: 0, skipped: 0, label: '갤러리를 읽는 중...' });
 
     try {
-      const parsedPhotos = await processInChunks(
-        newFiles,
-        12,
-        async (file) => await parsePhotoExif(file),
-        (current, total) => {
-          setProgressState(prev => ({ ...prev, current, total }));
+      const result = await scanDeviceGallery({
+        since: incremental ? readLastScanAt() : 0,
+        // A launch-time refresh must stay silent; only the explicit button may raise a dialog.
+        requestLocationPermission: !incremental,
+        onProgress: (current, total) => {
+          setProgressState({
+            active: true,
+            current,
+            total,
+            skipped: 0,
+            label: '사진 위치 정보 분석 중...'
+          });
         }
-      );
+      });
 
-      if (parsedPhotos.length > 0) {
-        setPhotos(prev => {
-          const updatedMap = new Map();
-          parsedPhotos.forEach(p => {
-            const key = p.fingerprint || p.name;
-            if (key) updatedMap.set(key, p);
-          });
-          prev.forEach(p => {
-            const key = p.fingerprint || p.name;
-            if (key && !updatedMap.has(key)) {
-              updatedMap.set(key, p);
-            }
-          });
-          return Array.from(updatedMap.values());
+      if (result.photos.length > 0) {
+        setPhotos((prev) => mergePhotos(prev, result.photos));
+      }
+      writeLastScanAt(result.scannedAt);
+
+      if (incremental && result.photos.length === 0) {
+        // Nothing new since last time — that's the expected quiet path, not a problem.
+      } else if (!result.mediaLocationGranted) {
+        setNotice({
+          type: 'warning',
+          message: '위치 권한(ACCESS_MEDIA_LOCATION)이 없어 사진의 GPS를 읽을 수 없습니다. 설정 > 앱 > 권한에서 허용해 주세요.'
+        });
+      } else if (result.photos.length === 0) {
+        setNotice({ type: 'info', message: '기기 갤러리에서 사진을 찾지 못했습니다.' });
+      } else if (result.withGps === 0) {
+        setNotice({
+          type: 'info',
+          message: `사진 ${result.photos.length}장을 불러왔지만 GPS가 기록된 사진이 없습니다. 카메라 앱의 "위치 태그" 설정을 확인해 주세요.`
         });
       }
     } catch (err) {
-      console.error("EXIF Bulk Import Error:", err);
+      console.error('Gallery scan failed:', err);
+      if (err instanceof MediaAccessError) {
+        setNotice({
+          type: 'error',
+          message: '사진 접근 권한이 거부되었습니다. 설정 > 앱 > 여행 기록 맵 > 권한 > 사진/미디어를 허용해 주세요.'
+        });
+      } else {
+        setNotice({ type: 'error', message: `갤러리 스캔 실패: ${err.message || err}` });
+      }
     } finally {
-      setProgressState({ active: false, current: 0, total: 0, skipped: 0, label: '' });
+      scanningRef.current = false;
+      setProgressState(IDLE_PROGRESS);
+    }
+  }, []);
+
+  // One automatic scan per launch, once persisted photos have been loaded and only if the
+  // permission is already granted (so a cold start never ambushes the user with a dialog).
+  useEffect(() => {
+    if (!isNative() || autoScanDoneRef.current || !hydrated) return;
+    autoScanDoneRef.current = true;
+
+    checkMediaAccess().then((access) => {
+      // A first run has to read everything; later launches only pick up what changed.
+      if (access.read) handleScanGallery({ incremental: photos.length > 0 && readLastScanAt() > 0 });
+    });
+  }, [hydrated, photos.length, handleScanGallery]);
+
+  const handleFileInputChange = async (e) => {
+    const rawFiles = Array.from(e.target.files || []);
+    e.target.value = '';
+    if (rawFiles.length === 0) return;
+
+    const existing = new Set();
+    photos.forEach((p) => {
+      if (p.fingerprint) existing.add(p.fingerprint);
+    });
+
+    const newFiles = rawFiles.filter((file) => !existing.has(getPhotoFingerprint(file)));
+    const skipped = rawFiles.length - newFiles.length;
+
+    if (newFiles.length === 0) {
+      setNotice({ type: 'info', message: `선택한 ${rawFiles.length}장이 모두 이미 저장되어 있습니다.` });
+      return;
+    }
+
+    setProgressState({ active: true, current: 0, total: newFiles.length, skipped, label: '사진 분석 중...' });
+
+    try {
+      const parsed = await processInChunks(newFiles, 12, parsePhotoExif, (current, total) => {
+        setProgressState((prev) => ({ ...prev, current, total }));
+      });
+      if (parsed.length > 0) setPhotos((prev) => mergePhotos(prev, parsed));
+    } catch (err) {
+      console.error('EXIF import failed:', err);
+      setNotice({ type: 'error', message: `사진 분석 실패: ${err.message || err}` });
+    } finally {
+      setProgressState(IDLE_PROGRESS);
     }
   };
 
-  const handleResetData = () => {
-    if (window.confirm("모든 사진 데이터를 초기화하고 삭제하시겠습니까?")) {
-      setPhotos([]);
-      clearPhotosDB();
-      geocodedRef.current.clear();
-      existingFingerprintsRef.current.clear();
-    }
+  const handleResetData = async () => {
+    if (!window.confirm('모든 사진 데이터를 초기화하고 삭제하시겠습니까?')) return;
+    setPhotos([]);
+    geocodedRef.current.clear();
+    clearThumbnailMemoryCache();
+    autoScanDoneRef.current = true; // don't immediately rescan what the user just cleared
+    try {
+      localStorage.removeItem(LAST_SCAN_KEY);
+    } catch {}
+    await clearPhotosDB();
   };
 
-  const handleFocusMap = useCallback((photo) => {
+  const handleFocusMap = useCallback(() => {
     setSelectedPhoto(null);
     setActiveTab('map');
   }, []);
 
   const handleDeletePhoto = useCallback((photoId) => {
-    setPhotos(prev => {
-      const next = prev.filter(p => p.id !== photoId);
-      savePhotosToDB(next);
-      return next;
-    });
+    setPhotos((prev) => prev.filter((p) => p.id !== photoId));
   }, []);
+
+  const gpsCount = photos.reduce((n, p) => n + (p.hasGps ? 1 : 0), 0);
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#000' }}>
@@ -294,13 +344,12 @@ export default function App() {
         onChange={handleFileInputChange}
       />
 
-      {/* Header */}
       <header className="header glass-surface">
         <div className="header-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           <span>여행 기록</span>
           {photos.length > 0 && (
             <span style={{ fontSize: '11px', background: 'rgba(0,122,255,0.2)', color: 'var(--apple-blue)', padding: '2px 6px', borderRadius: '8px', fontWeight: 600 }}>
-              {photos.length}장
+              {photos.length}장 · GPS {gpsCount}
             </span>
           )}
         </div>
@@ -310,14 +359,13 @@ export default function App() {
               <Trash2 size={18} />
             </button>
           )}
-          
-          {/* Automatic Camera Folder Scan Button */}
+
           <button
             className="header-btn"
-            onClick={handleAutoScanGallery}
+            onClick={() => handleScanGallery({ incremental: false })}
             disabled={progressState.active}
             style={{ background: 'var(--apple-blue)', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 12px', width: 'auto', borderRadius: '18px' }}
-            aria-label="갤러리 자동 스캔"
+            aria-label="갤러리 스캔"
           >
             {progressState.active ? (
               <>
@@ -327,30 +375,15 @@ export default function App() {
             ) : (
               <>
                 <FolderSearch size={16} />
-                <span style={{ fontSize: '13px', fontWeight: 600 }}>갤러리 자동 스캔</span>
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>갤러리 스캔</span>
               </>
             )}
           </button>
         </div>
       </header>
 
-      {/* Progress Toast Banner */}
       {progressState.active && (
-        <div style={{
-          position: 'fixed',
-          top: '52px',
-          left: '16px',
-          right: '16px',
-          zIndex: 1500,
-          background: 'rgba(28, 28, 30, 0.95)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          padding: '12px 16px',
-          borderRadius: '14px',
-          border: '0.5px solid rgba(255,255,255,0.18)',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-          animation: 'slideUp 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)'
-        }}>
+        <div className="floating-banner">
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '4px' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
@@ -358,13 +391,13 @@ export default function App() {
             </span>
             {progressState.total > 0 && (
               <span style={{ color: 'var(--apple-blue)' }}>
-                {progressState.current} / {progressState.total} 장 ({Math.round((progressState.current / progressState.total) * 100)}%)
+                {progressState.current} / {progressState.total} ({Math.round((progressState.current / progressState.total) * 100)}%)
               </span>
             )}
           </div>
           {progressState.skipped > 0 && (
             <div style={{ fontSize: '11px', color: 'rgba(235,235,245,0.6)', marginBottom: '6px' }}>
-              ℹ️ 중복/스크린샷 {progressState.skipped}장 자동 제외됨
+              ℹ️ 중복 {progressState.skipped}장 자동 제외됨
             </div>
           )}
           {progressState.total > 0 && (
@@ -381,7 +414,19 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content Area */}
+      {notice && !progressState.active && (
+        <div className="floating-banner" onClick={() => setNotice(null)}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '13px', color: '#fff', lineHeight: 1.45 }}>
+            <AlertTriangle
+              size={16}
+              style={{ flexShrink: 0, marginTop: '1px' }}
+              color={notice.type === 'error' ? 'var(--apple-red, #FF3B30)' : 'var(--apple-blue)'}
+            />
+            <span>{notice.message}</span>
+          </div>
+        </div>
+      )}
+
       <div className="content-area">
         {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} />}
         {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={() => setActiveTab('map')} />}
@@ -389,9 +434,8 @@ export default function App() {
         {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} />}
       </div>
 
-      {/* Bottom Tab Bar Navigation */}
       <nav className="tab-bar glass-surface">
-        {tabs.map(tab => {
+        {tabs.map((tab) => {
           const Icon = tab.icon;
           return (
             <button
@@ -406,12 +450,8 @@ export default function App() {
         })}
       </nav>
 
-      {/* Update Release Notes Modal */}
-      {showUpdateModal && (
-        <UpdateModal onClose={handleCloseUpdateModal} />
-      )}
+      {showUpdateModal && <UpdateModal onClose={handleCloseUpdateModal} />}
 
-      {/* Photo Detail Modal */}
       {selectedPhoto && (
         <ExifModal
           photo={selectedPhoto}

@@ -1,5 +1,6 @@
 import React from 'react';
-import { Image, MapPin } from 'lucide-react';
+import { Image } from 'lucide-react';
+import PhotoImage from './PhotoImage';
 
 export default function GalleryView({ photos = [], onPhotoSelect }) {
   if (!photos || photos.length === 0) {
@@ -24,7 +25,7 @@ export default function GalleryView({ photos = [], onPhotoSelect }) {
             className="gallery-item"
             onClick={() => onPhotoSelect && onPhotoSelect(photo)}
           >
-            <img src={photo.url} alt="Gallery item" loading="lazy" />
+            <PhotoImage photo={photo} alt={photo.name || 'Gallery item'} className="gallery-thumb" />
             {photo.hasGps && <div className="gps-dot"></div>}
           </div>
         ))}
