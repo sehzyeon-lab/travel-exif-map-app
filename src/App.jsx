@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Camera } from '@capacitor/camera';
 import { Capacitor } from '@capacitor/core';
-import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2 } from 'lucide-react';
+import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2 } from 'lucide-react';
 import { parsePhotoExif } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode } from './utils/geoUtils';
+import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
 
 import ExifModal from './components/ExifModal';
 import MapView from './components/MapView';
 import TimelineView from './components/TimelineView';
 import GalleryView from './components/GalleryView';
 import AnalyticsView from './components/AnalyticsView';
-
-const STORAGE_KEY = 'travel_exif_photos_v1';
 
 const tabs = [
   { id: 'map', label: '지도', icon: Map },
@@ -20,48 +19,62 @@ const tabs = [
   { id: 'analytics', label: '통계', icon: BarChart3 }
 ];
 
+// Process items in parallel chunks to prevent UI blocking
+async function processInChunks(items, chunkSize, fn, onProgress) {
+  const results = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(
+      chunk.map(async (item) => {
+        try {
+          return await fn(item);
+        } catch (e) {
+          console.warn('Chunk processing error:', e);
+          return null;
+        }
+      })
+    );
+    results.push(...chunkResults.filter(Boolean));
+    if (onProgress) {
+      onProgress(Math.min(i + chunkSize, items.length), items.length);
+    }
+    // Yield execution to main thread for 16ms (1 frame) so UI stays 60fps
+    await new Promise(r => setTimeout(r, 16));
+  }
+  return results;
+}
+
 export default function App() {
   const [photos, setPhotos] = useState([]);
   const [trips, setTrips] = useState([]);
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0 });
   const geocodedRef = useRef(new Set());
 
-  // Load photos from localStorage on mount
+  // Load photos from IndexedDB on mount
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && parsed.length > 0) {
-          setPhotos(parsed);
-          // Mark already geocoded photos
-          parsed.forEach(p => {
-            if (p.locationName && p.locationName !== '위치 확인 중...') {
-              geocodedRef.current.add(p.id);
-            }
-          });
-        }
+    loadPhotosFromDB().then((stored) => {
+      if (stored && stored.length > 0) {
+        setPhotos(stored);
+        stored.forEach(p => {
+          if (p.locationName && p.locationName !== '위치 확인 중...') {
+            geocodedRef.current.add(p.id);
+          }
+        });
       }
-    } catch (e) {
-      console.error("Failed to load stored photos", e);
-    }
+    });
   }, []);
 
-  // Save photos & recompute trips
+  // Save photos to IndexedDB & recompute trips
   useEffect(() => {
     if (photos.length > 0) {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(photos));
-      } catch (e) {
-        console.warn('Storage save error:', e);
-      }
+      savePhotosToDB(photos);
     }
     setTrips(clusterPhotosIntoTrips(photos));
   }, [photos]);
 
-  // Geocode photos with missing location - runs only once per photo
+  // Reverse geocode missing locations in background without freezing
   useEffect(() => {
     const toGeocode = photos.filter(
       p => p.hasGps && p.latitude && p.longitude &&
@@ -71,7 +84,6 @@ export default function App() {
 
     if (toGeocode.length === 0) return;
 
-    // Mark as being geocoded to prevent re-runs
     toGeocode.forEach(p => geocodedRef.current.add(p.id));
 
     const doGeocode = async () => {
@@ -83,6 +95,8 @@ export default function App() {
         } catch (e) {
           updates[p.id] = `${p.latitude.toFixed(2)}°, ${p.longitude.toFixed(2)}°`;
         }
+        // Brief pause between requests to respect OpenStreetMap rate limits
+        await new Promise(r => setTimeout(r, 300));
       }
       
       setPhotos(prev => prev.map(p => 
@@ -93,74 +107,83 @@ export default function App() {
     doGeocode();
   }, [photos]);
 
+  // Bulk Gallery Import Handler (Unlimited selection + Non-lagging parallel processing)
   const handleGalleryPick = async () => {
-    if (isProcessing) return;
-    setIsProcessing(true);
+    if (progressState.active) return;
 
     try {
       if (Capacitor.isNativePlatform()) {
-        // Native: use Capacitor Camera plugin
+        // Native: limit: 0 enables unlimited multi-select in system photo picker
         const result = await Camera.pickImages({
-          quality: 90,
-          limit: 30
+          quality: 85,
+          limit: 0
         });
 
-        const newPhotos = [];
-        for (const img of result.photos) {
-          try {
+        if (!result.photos || result.photos.length === 0) return;
+
+        setProgressState({ active: true, current: 0, total: result.photos.length });
+
+        const newPhotos = await processInChunks(
+          result.photos,
+          5, // 5 parallel workers
+          async (img) => {
             const response = await fetch(img.webPath);
             const blob = await response.blob();
             const file = new File(
               [blob],
-              `photo_${Date.now()}.${img.format || 'jpg'}`,
+              `photo_${Date.now()}_${Math.random().toString(36).substring(7)}.${img.format || 'jpg'}`,
               { type: blob.type || 'image/jpeg' }
             );
-            const exifData = await parsePhotoExif(file);
-            if (exifData) newPhotos.push(exifData);
-          } catch (e) {
-            console.error("Error processing native image:", e);
+            return await parsePhotoExif(file);
+          },
+          (current, total) => {
+            setProgressState({ active: true, current, total });
           }
-        }
+        );
 
         if (newPhotos.length > 0) {
           setPhotos(prev => [...newPhotos, ...prev]);
         }
       } else {
-        // Web fallback: file input
+        // Web fallback: file input with multiple selection
         const input = document.createElement('input');
         input.type = 'file';
         input.multiple = true;
         input.accept = 'image/*';
         input.onchange = async (e) => {
           const files = Array.from(e.target.files);
-          const newPhotos = [];
-          for (const file of files) {
-            try {
-              const exifData = await parsePhotoExif(file);
-              if (exifData) newPhotos.push(exifData);
-            } catch (err) {
-              console.error("EXIF parse error:", err);
+          if (files.length === 0) return;
+
+          setProgressState({ active: true, current: 0, total: files.length });
+
+          const newPhotos = await processInChunks(
+            files,
+            5,
+            async (file) => await parsePhotoExif(file),
+            (current, total) => {
+              setProgressState({ active: true, current, total });
             }
-          }
+          );
+
           if (newPhotos.length > 0) {
             setPhotos(prev => [...newPhotos, ...prev]);
           }
-          setIsProcessing(false);
+          setProgressState({ active: false, current: 0, total: 0 });
         };
         input.click();
-        return; // isProcessing cleared in onchange
+        return;
       }
     } catch (e) {
       console.error("Gallery pick error:", e);
+    } finally {
+      setProgressState({ active: false, current: 0, total: 0 });
     }
-
-    setIsProcessing(false);
   };
 
   const handleResetData = () => {
-    if (window.confirm("모든 사진 데이터를 삭제하시겠습니까?")) {
+    if (window.confirm("모든 사진 데이터를 초기화하고 삭제하시겠습니까?")) {
       setPhotos([]);
-      localStorage.removeItem(STORAGE_KEY);
+      clearPhotosDB();
       geocodedRef.current.clear();
     }
   };
@@ -172,7 +195,7 @@ export default function App() {
 
   return (
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: '#000' }}>
-      {/* Header */}
+      {/* Top Header */}
       <header className="header glass-surface">
         <div className="header-title">여행 기록</div>
         <div className="header-actions">
@@ -184,16 +207,54 @@ export default function App() {
           <button
             className="header-btn"
             onClick={handleGalleryPick}
-            disabled={isProcessing}
+            disabled={progressState.active}
             style={{ background: 'var(--apple-blue)' }}
             aria-label="사진 추가"
           >
-            <Plus size={18} />
+            {progressState.active ? <Loader2 size={18} className="spin-icon" /> : <Plus size={18} />}
           </button>
         </div>
       </header>
 
-      {/* Content */}
+      {/* Progress Toast Banner when importing bulk photos */}
+      {progressState.active && (
+        <div style={{
+          position: 'fixed',
+          top: '52px',
+          left: '16px',
+          right: '16px',
+          zIndex: 1500,
+          background: 'rgba(28, 28, 30, 0.92)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          padding: '12px 16px',
+          borderRadius: '14px',
+          border: '0.5px solid rgba(255,255,255,0.18)',
+          boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+          animation: 'slideUp 0.3s cubic-bezier(0.25, 0.1, 0.25, 1)'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', fontWeight: 600, color: '#fff', marginBottom: '6px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+              사진 분석 중...
+            </span>
+            <span style={{ color: 'var(--apple-blue)' }}>
+              {progressState.current} / {progressState.total} 장 ({Math.round((progressState.current / progressState.total) * 100)}%)
+            </span>
+          </div>
+          <div style={{ height: '4px', background: 'rgba(255,255,255,0.1)', borderRadius: '2px', overflow: 'hidden' }}>
+            <div style={{
+              width: `${(progressState.current / progressState.total) * 100}%`,
+              height: '100%',
+              background: 'var(--apple-blue)',
+              borderRadius: '2px',
+              transition: 'width 0.2s ease'
+            }} />
+          </div>
+        </div>
+      )}
+
+      {/* Main Content Area */}
       <div className="content-area">
         {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} />}
         {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={() => setActiveTab('map')} />}
@@ -201,7 +262,7 @@ export default function App() {
         {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} />}
       </div>
 
-      {/* Bottom Tab Bar */}
+      {/* Bottom Tab Bar Navigation */}
       <nav className="tab-bar glass-surface">
         {tabs.map(tab => {
           const Icon = tab.icon;
