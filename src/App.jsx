@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2 } from 'lucide-react';
+import { Map, Clock, Image as ImageIcon, BarChart3, Plus, Trash2, Loader2, Sparkles } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
@@ -10,6 +10,7 @@ import MapView from './components/MapView';
 import TimelineView from './components/TimelineView';
 import GalleryView from './components/GalleryView';
 import AnalyticsView from './components/AnalyticsView';
+import UpdateModal, { CURRENT_VERSION } from './components/UpdateModal';
 
 const tabs = [
   { id: 'map', label: '지도', icon: Map },
@@ -37,7 +38,6 @@ async function processInChunks(items, chunkSize, fn, onProgress) {
     if (onProgress) {
       onProgress(Math.min(i + chunkSize, items.length), items.length);
     }
-    // Yield 16ms to main thread to keep UI at 60fps
     await new Promise(r => setTimeout(r, 16));
   }
   return results;
@@ -49,10 +49,28 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('map');
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const [progressState, setProgressState] = useState({ active: false, current: 0, total: 0, skipped: 0 });
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
   
   const geocodedRef = useRef(new Set());
   const existingFingerprintsRef = useRef(new Set());
   const fileInputRef = useRef(null);
+
+  // Check for app update release notes on startup
+  useEffect(() => {
+    try {
+      const seenVersion = localStorage.getItem('seen_app_version');
+      if (seenVersion !== CURRENT_VERSION) {
+        setShowUpdateModal(true);
+      }
+    } catch (e) {}
+  }, []);
+
+  const handleCloseUpdateModal = () => {
+    setShowUpdateModal(false);
+    try {
+      localStorage.setItem('seen_app_version', CURRENT_VERSION);
+    } catch (e) {}
+  };
 
   // Keep track of existing fingerprints for instant deduplication
   useEffect(() => {
@@ -312,6 +330,11 @@ export default function App() {
           );
         })}
       </nav>
+
+      {/* Update Release Notes Modal */}
+      {showUpdateModal && (
+        <UpdateModal onClose={handleCloseUpdateModal} />
+      )}
 
       {/* Photo Detail Modal */}
       {selectedPhoto && (
