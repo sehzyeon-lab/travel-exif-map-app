@@ -430,6 +430,15 @@ html, body, #root {
   background-color: #000;
 }
 
+.download-sheet { position: relative; width: min(420px, calc(100% - 32px)); margin: auto; padding: 28px 24px 24px; border-radius: 22px; background: var(--bg-secondary); text-align: center; box-shadow: 0 16px 48px rgba(0,0,0,.55); }
+.download-sheet h2 { margin: 10px 0 8px; font-size: 20px; }
+.download-sheet p { margin: 0 0 20px; color: var(--text-muted); font-size: 13px; line-height: 1.55; }
+.download-icon { width: 58px; height: 58px; margin: 0 auto; border-radius: 18px; display: flex; align-items: center; justify-content: center; color: var(--apple-green); background: rgba(48,209,88,.13); }
+.download-close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 16px; background: rgba(255,255,255,.1); color: #fff; cursor: pointer; }
+.apk-download-button { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 50px; border-radius: 13px; background: var(--apple-blue); color: #fff; text-decoration: none; font-weight: 700; }
+.download-security-note { margin-top: 14px; display: flex; align-items: flex-start; gap: 6px; text-align: left; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+
+
 .modal-meta-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

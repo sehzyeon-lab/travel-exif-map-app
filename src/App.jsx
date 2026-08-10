@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // `Map` is aliased: the unaliased icon name shadows the global Map constructor in this module.
-import { Map as MapIcon, Clock, Image as ImageIcon, BarChart3, Trash2, Loader2, FolderSearch, AlertTriangle } from 'lucide-react';
+import { Map as MapIcon, Clock, Image as ImageIcon, BarChart3, Trash2, Loader2, FolderSearch, AlertTriangle, Download } from 'lucide-react';
 import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode, geocodeKey } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
@@ -13,6 +13,7 @@ import TimelineView from './components/TimelineView';
 import GalleryView from './components/GalleryView';
 import AnalyticsView from './components/AnalyticsView';
 import UpdateModal from './components/UpdateModal';
+import AndroidDownloadModal from './components/AndroidDownloadModal';
 import { CURRENT_VERSION } from './releaseNotes';
 
 const tabs = [
@@ -93,6 +94,7 @@ export default function App() {
   const [geocodeProgress, setGeocodeProgress] = useState(IDLE_PROGRESS);
   const [notice, setNotice] = useState(null);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   const geocodedRef = useRef(new Set());
@@ -386,6 +388,7 @@ export default function App() {
           )}
         </div>
         <div className="header-actions">
+          <button className="header-btn" onClick={() => setShowDownloadModal(true)} aria-label="Android APK 다운로드"><Download size={18} /></button>
           {photos.length > 0 && (
             <button className="header-btn" onClick={handleResetData} aria-label="초기화">
               <Trash2 size={18} />
@@ -493,6 +496,7 @@ export default function App() {
       </nav>
 
       {showUpdateModal && <UpdateModal onClose={handleCloseUpdateModal} />}
+      {showDownloadModal && <AndroidDownloadModal onClose={() => setShowDownloadModal(false)} />}
 
       {selectedPhoto && (
         <ExifModal

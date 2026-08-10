@@ -1,5 +1,5 @@
-export const CURRENT_VERSION = '2.1.1';
+export const CURRENT_VERSION = '2.1.2';
 
 export const RELEASE_NOTES = [
-  { icon: '🗺️', title: '여행 기록 관리 개선', desc: '다중 삭제, 최신순 기록, 방문 지역 지도와 위치 분석 진행 상태를 추가했습니다.' }
+  { icon: '🛡️', title: '안전한 APK 다운로드', desc: '공식 사이트에서 APK의 SHA-256 무결성을 확인한 뒤 안전하게 다운로드할 수 있습니다.' }
 ];
