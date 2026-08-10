@@ -75,7 +75,8 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect }) {
     }
     
     validPhotos.forEach((photo, idx) => {
-      const iconHtml = `<div class="photo-pin"><img src="${photo.url}" alt="" /><div class="pin-badge">${idx+1}</div></div>`;
+      const safeUrl = String(photo.url || '').replace(/"/g, '&quot;');
+      const iconHtml = `<div class="photo-pin"><img src="${safeUrl}" alt="" /><div class="pin-badge">${idx+1}</div></div>`;
       const customIcon = L.divIcon({
         html: iconHtml,
         className: 'custom-photo-marker',

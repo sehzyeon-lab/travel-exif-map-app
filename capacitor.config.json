@@ -4,6 +4,6 @@
   "webDir": "dist",
   "server": {
     "url": "https://travel-exif-map-app.vercel.app/",
-    "cleartext": true
+    "cleartext": false
   }
 }
