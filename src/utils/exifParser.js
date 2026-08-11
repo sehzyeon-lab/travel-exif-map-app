@@ -18,6 +18,23 @@ export function checkIsScreenshot(fileName, rawData, fileType) {
   return isPng && !hasCameraHardware;
 }
 
+/**
+ * True when a record looks like a genuine captured photo — it carries GPS, a camera make/model,
+ * or shutter settings (ISO/aperture/altitude). Screenshots, saved web images, memes, and messenger
+ * downloads with every EXIF tag stripped carry none of these, so they are kept out of the library.
+ */
+export function isImportablePhoto(photo) {
+  if (!photo) return false;
+  return !!(
+    photo.hasGps ||
+    photo.cameraMake ||
+    photo.cameraModel ||
+    photo.iso ||
+    photo.aperture ||
+    typeof photo.altitude === 'number'
+  );
+}
+
 export function getPhotoFingerprint(file) {
   if (typeof file === 'string') return file;
   const name = file.name || 'unnamed';

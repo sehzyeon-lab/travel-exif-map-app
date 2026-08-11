@@ -262,19 +262,21 @@ html, body, #root {
 .map-view-container { position: absolute; inset: 0; }
 .map-full-screen { width: 100%; height: 100%; background: var(--ink); }
 
-/* Dark map = filter over OSM tiles so Korean labels survive in both themes,
-   warmed slightly to sit inside the ink palette. */
+/* Dark map = filter over OSM tiles so Korean labels survive in both themes. Kept to 3 operations —
+   heavier filters repaint the whole tile pane on every pan and cause noticeable lag on-device. */
 .map-dark .leaflet-tile-pane {
-  filter: invert(1) hue-rotate(185deg) brightness(0.86) contrast(0.92) saturate(0.8) sepia(0.12);
+  filter: invert(1) hue-rotate(180deg) brightness(0.92);
 }
 
-/* Coordinate frame — corner registration marks + edge ticks (atlas margin) */
+/* Coordinate frame — corner registration marks (atlas margin). Default suits the light map;
+   the dark map flips the marks to a light ink so they stay visible. */
 .map-coord-frame { position: absolute; inset: 0; z-index: 450; pointer-events: none; }
 .map-coord-frame .corner {
   position: absolute; width: 18px; height: 18px;
-  border-color: rgba(243, 236, 222, 0.45);
+  border-color: rgba(21, 18, 14, 0.5);
   border-style: solid; border-width: 0;
 }
+.map-dark .map-coord-frame .corner { border-color: rgba(243, 236, 222, 0.45); }
 .map-coord-frame .corner.tl { top: calc(58px + env(safe-area-inset-top, 0px)); left: 12px; border-top-width: 1.5px; border-left-width: 1.5px; }
 .map-coord-frame .corner.tr { top: calc(58px + env(safe-area-inset-top, 0px)); right: 12px; border-top-width: 1.5px; border-right-width: 1.5px; }
 .map-coord-frame .corner.bl { bottom: calc(76px + env(safe-area-inset-bottom, 0px)); left: 12px; border-bottom-width: 1.5px; border-left-width: 1.5px; }
@@ -285,9 +287,41 @@ html, body, #root {
   left: 50%; transform: translateX(-50%);
   font-family: var(--font-mono);
   font-size: 9px; letter-spacing: 0.16em;
-  color: rgba(243, 236, 222, 0.5);
+  color: rgba(21, 18, 14, 0.55);
   text-transform: uppercase;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+.map-dark .map-coord-frame .frame-label { color: rgba(243, 236, 222, 0.5); text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+
+/* Focused-trip chip — shows which trip's route is drawn, with a clear button */
+.map-focus-chip {
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top, 0px));
+  left: 50%; transform: translateX(-50%);
+  z-index: 700;
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(78vw, 340px);
+  padding: 7px 8px 7px 13px;
+  border-radius: 20px;
+  background: rgba(36, 30, 23, 0.94);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--hairline-strong);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.45);
+  color: var(--paper);
+  font-size: 13px; font-weight: 600;
+  animation: chipIn 0.28s var(--ease-drawer);
+}
+.map-focus-chip > svg { color: var(--amber); flex-shrink: 0; }
+.map-focus-chip span { min-width: 0; }
+.map-focus-chip button {
+  flex-shrink: 0;
+  width: 26px; height: 26px; border-radius: 13px;
+  border: 0; background: var(--elevated); color: var(--paper);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+@keyframes chipIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.96); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
 }
 
 .map-floating-controls {
@@ -549,6 +583,101 @@ html, body, #root {
   max-width: 290px; line-height: 1.55; margin-top: 10px;
 }
 .timeline-home-hint b { color: var(--paper); }
+
+/* "지도에서 경로 보기" footer button on each trip card */
+.trip-route-btn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  width: calc(100% - 20px);
+  margin: 0 10px 10px;
+  padding: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 11px;
+  background: var(--elevated);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: transform 0.14s var(--ease-out);
+}
+.trip-route-btn:active { transform: scale(0.98); }
+.trip-route-btn svg { color: var(--amber); }
+
+/* Trip edit sheet */
+.trip-edit-sheet { padding: 0 16px 16px; }
+.edit-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 0 14px;
+}
+.edit-sheet-close {
+  width: 32px; height: 32px; border-radius: 10px;
+  border: 0; background: var(--elevated); color: var(--paper);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.edit-name-row { display: flex; gap: 8px; margin-bottom: 14px; }
+.edit-name-input {
+  flex: 1; min-width: 0;
+  background: var(--card);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: var(--paper);
+  font-family: var(--font-sans);
+  font-size: 16px; font-weight: 700;
+  outline: none;
+}
+.edit-name-input:focus { border-color: var(--amber); }
+.edit-name-save {
+  flex-shrink: 0; width: 46px; border: 0; border-radius: 12px;
+  background: linear-gradient(180deg, var(--amber), var(--amber-deep));
+  color: #241a09; display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+
+.edit-actions { display: flex; flex-direction: column; gap: 8px; }
+.edit-action {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  width: 100%; padding: 13px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 13px;
+  background: var(--card);
+  color: var(--paper);
+  cursor: pointer;
+  transition: transform 0.14s var(--ease-out);
+}
+.edit-action:active { transform: scale(0.98); }
+.edit-action > svg { flex-shrink: 0; color: var(--amber); }
+.edit-action div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.edit-action b { font-size: 14px; font-weight: 700; }
+.edit-action span { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+.edit-action.danger { border-color: rgba(217,96,60,0.35); background: rgba(217,96,60,0.08); }
+.edit-action.danger > svg, .edit-action.danger b { color: var(--rust); }
+
+.edit-split { margin-top: 16px; }
+.edit-split-head {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 10px;
+}
+.edit-split-head svg { color: var(--amber); }
+.edit-split-strip {
+  display: flex; gap: 6px; overflow-x: auto;
+  padding-bottom: 6px; scrollbar-width: none;
+}
+.edit-split-item {
+  position: relative; flex-shrink: 0;
+  width: 60px; height: 60px; padding: 0;
+  border: 1px solid var(--hairline); border-radius: 10px;
+  overflow: hidden; background: var(--elevated); cursor: pointer;
+}
+.edit-split-item:disabled { opacity: 0.5; cursor: default; }
+.edit-split-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.edit-split-cut {
+  position: absolute; top: 3px; left: 3px;
+  width: 18px; height: 18px; border-radius: 6px;
+  background: var(--amber); color: #241a09;
+  font-size: 11px; display: flex; align-items: center; justify-content: center;
+}
+.edit-split-hint { font-size: 11.5px; color: var(--muted); line-height: 1.45; margin: 10px 0 0; }
 
 /* =============================================================================
    Gallery

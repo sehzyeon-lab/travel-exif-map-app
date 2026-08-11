@@ -46,6 +46,10 @@ export function tripKeyOf(startTimestamp, centerLat, centerLng) {
  * @param {object} [options]
  * @param {{lat:number,lng:number}} [options.home]      Registered home; nearby photos are excluded.
  * @param {Map|object} [options.nameOverrides]          tripKey -> custom title.
+ * @param {Set}    [options.mergeBoundaries]            Photo ids that must NOT start a new trip
+ *                                                      (user merged this trip into the previous one).
+ * @param {Set}    [options.splitBoundaries]            Photo ids that MUST start a new trip
+ *                                                      (user split a trip here).
  * @param {number} [options.maxDistanceKm]              Max distance from a trip's centroid (default 80).
  * @param {number} [options.maxTimeGapHours]            Max quiet gap before a new trip starts (default 36).
  */
@@ -53,6 +57,8 @@ export function clusterPhotosIntoTrips(photos, options = {}) {
   const {
     home = null,
     nameOverrides = null,
+    mergeBoundaries = null,
+    splitBoundaries = null,
     maxDistanceKm = 80,
     maxTimeGapHours = 36
   } = options;
@@ -65,6 +71,8 @@ export function clusterPhotosIntoTrips(photos, options = {}) {
     .sort((a, b) => a.timestamp - b.timestamp);
   if (gpsPhotos.length === 0) return [];
 
+  // Pass 1 — automatic segmentation. A photo starts a new trip when it's too far in time or space
+  // from the current trip's centroid, OR when the user forced a split there.
   const groups = [];
   let current = [gpsPhotos[0]];
   let sumLat = gpsPhotos[0].latitude;
@@ -79,7 +87,10 @@ export function clusterPhotosIntoTrips(photos, options = {}) {
     const centroidLng = sumLng / current.length;
     const distFromCentroid = calculateHaversineDistance(centroidLat, centroidLng, curr.latitude, curr.longitude);
 
-    if (timeGapHours <= maxTimeGapHours && distFromCentroid <= maxDistanceKm) {
+    const forceSplit = splitBoundaries?.has(curr.id);
+    const keepTogether = !forceSplit && timeGapHours <= maxTimeGapHours && distFromCentroid <= maxDistanceKm;
+
+    if (keepTogether) {
       current.push(curr);
       sumLat += curr.latitude;
       sumLng += curr.longitude;
@@ -92,7 +103,18 @@ export function clusterPhotosIntoTrips(photos, options = {}) {
   }
   groups.push(current);
 
-  const trips = groups.map((g) => createTripRecord(g, { home, getOverride }));
+  // Pass 2 — apply user merges at the group level, so joining two far-apart trips pulls the WHOLE
+  // later segment in (a per-photo distance check would otherwise re-split it immediately).
+  const mergedGroups = [];
+  for (const group of groups) {
+    if (mergedGroups.length > 0 && mergeBoundaries?.has(group[0].id)) {
+      mergedGroups[mergedGroups.length - 1] = mergedGroups[mergedGroups.length - 1].concat(group);
+    } else {
+      mergedGroups.push(group);
+    }
+  }
+
+  const trips = mergedGroups.map((g) => createTripRecord(g, { home, getOverride }));
 
   // The route stays time-ascending inside each trip; the list shows the most recent journey first.
   return trips.reverse();

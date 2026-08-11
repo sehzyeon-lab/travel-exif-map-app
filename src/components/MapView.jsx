@@ -4,14 +4,12 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
-import { Moon, Sun, Route, Maximize2, Compass, LocateFixed, Home } from 'lucide-react';
+import { Moon, Sun, Maximize2, Compass, LocateFixed, Home, X, Route } from 'lucide-react';
 
 const TRANSPARENT_PIXEL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const MAX_ROUTE_POINTS = 180;
 
-// OpenStreetMap standard renders place names in the local language — Korean inside Korea — which
-// CartoDB's English-only basemaps do not. Dark mode is a CSS filter over the same tiles so labels
-// stay Korean in both themes.
+// OpenStreetMap standard renders place names in the local language — Korean inside Korea.
 const OSM_TILE = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
 function sampleRoute(photos) {
@@ -20,7 +18,7 @@ function sampleRoute(photos) {
   return photos.filter((_, index) => index % step === 0 || index === photos.length - 1);
 }
 
-/** Initial bearing from a → b, in degrees clockwise from north. */
+/** Initial bearing a → b, in degrees clockwise from north. */
 function bearing(a, b) {
   const toRad = (d) => (d * Math.PI) / 180;
   const y = Math.sin(toRad(b.lng - a.lng)) * Math.cos(toRad(b.lat));
@@ -30,7 +28,6 @@ function bearing(a, b) {
   return (Math.atan2(y, x) * 180) / Math.PI;
 }
 
-/** Drops a handful of arrowheads along a route so the direction of travel reads at a glance. */
 function addRouteArrows(layer, points) {
   if (points.length < 2) return;
   const maxArrows = 6;
@@ -50,24 +47,34 @@ function addRouteArrows(layer, points) {
   }
 }
 
-export default function MapView({ photos = [], trips = [], onPhotoSelect, focusPhoto = null, home = null, onSetHome }) {
+export default function MapView({
+  photos = [], trips = [], onPhotoSelect,
+  focusPhoto = null, focusTrip = null, onClearFocusTrip,
+  home = null, onSetHome
+}) {
   const mapRef = useRef(null);
   const mapInstanceRef = useRef(null);
   const dataLayerRef = useRef(null);
+  const routeLayerRef = useRef(null);
   const overlayLayerRef = useRef(null);
   const locateMarkerRef = useRef(null);
-  const [isDark, setIsDark] = useState(true);
-  const [showRoutes, setShowRoutes] = useState(true);
+  const [isDark, setIsDark] = useState(false);
 
   const validPhotos = useMemo(() => photos.filter((p) => p.hasGps), [photos]);
 
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return undefined;
-    const map = L.map(mapRef.current, { zoomControl: false, attributionControl: false, center: [36.5, 127.5], zoom: 7 });
-    L.tileLayer(OSM_TILE, { maxZoom: 19, crossOrigin: true }).addTo(map);
+    const map = L.map(mapRef.current, {
+      zoomControl: false, attributionControl: false,
+      center: [36.5, 127.5], zoom: 7,
+      preferCanvas: true // vector routes render on canvas — far cheaper when panning
+    });
+    L.tileLayer(OSM_TILE, {
+      maxZoom: 19, crossOrigin: true,
+      keepBuffer: 2, updateWhenZooming: false, updateWhenIdle: true // fewer tile churns while moving
+    }).addTo(map);
     mapInstanceRef.current = map;
 
-    // Long-press (mobile) / right-click (desktop) drops a home pin at that spot.
     map.on('contextmenu', (e) => {
       if (window.confirm('이 위치를 집으로 등록할까요?\n(집 근처 사진은 여행에서 자동 제외됩니다)')) {
         onSetHome?.({ lat: e.latlng.lat, lng: e.latlng.lng });
@@ -78,43 +85,26 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
       map.remove();
       mapInstanceRef.current = null;
       dataLayerRef.current = null;
+      routeLayerRef.current = null;
       overlayLayerRef.current = null;
       locateMarkerRef.current = null;
     };
-    // onSetHome is stable (useCallback); the map must be built exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Photo pins + routes.
+  // Photo pins (clustered). Kept independent of the route layer so toggling a trip focus never
+  // rebuilds thousands of markers.
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return undefined;
     if (dataLayerRef.current) map.removeLayer(dataLayerRef.current);
-
-    const layer = L.layerGroup();
-    dataLayerRef.current = layer;
-
-    if (showRoutes) {
-      trips.forEach((trip) => {
-        const route = sampleRoute((trip.photos || []).filter((p) => p.hasGps));
-        if (route.length > 1) {
-          const latlngs = route.map((p) => ({ lat: p.latitude, lng: p.longitude }));
-          L.polyline(latlngs.map((p) => [p.lat, p.lng]), {
-            color: '#F2A03D', weight: 3, opacity: 0.92, lineCap: 'round', lineJoin: 'round', interactive: false
-          }).addTo(layer);
-          addRouteArrows(layer, latlngs);
-        }
-      });
-    }
 
     const clusters = L.markerClusterGroup({
       chunkedLoading: true,
       chunkInterval: 60,
       chunkDelay: 20,
       removeOutsideVisibleBounds: true,
-      maxClusterRadius: (zoom) => (zoom >= 15 ? 20 : 55),
-      // At the deepest zoom, break clusters apart so individual photos always surface — this is
-      // what stops a "number circle" from lingering when you zoom all the way in.
+      maxClusterRadius: (zoom) => (zoom >= 15 ? 24 : 60),
       disableClusteringAtZoom: 18,
       spiderfyOnMaxZoom: true,
       showCoverageOnHover: false,
@@ -126,18 +116,41 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
     validPhotos.forEach((photo) => {
       const safeUrl = String(photo.url || TRANSPARENT_PIXEL).replace(/"/g, '&quot;');
       const customIcon = L.divIcon({
-        html: `<div class="photo-pin"><img src="${safeUrl}" alt="" /></div>`,
+        html: `<div class="photo-pin"><img src="${safeUrl}" alt="" loading="lazy" /></div>`,
         className: 'custom-photo-marker', iconSize: [44, 44], iconAnchor: [22, 22]
       });
       const marker = L.marker([photo.latitude, photo.longitude], { icon: customIcon }).on('click', () => onPhotoSelect?.(photo));
       clusters.addLayer(marker);
     });
-    layer.addLayer(clusters);
-    layer.addTo(map);
+    dataLayerRef.current = clusters;
+    clusters.addTo(map);
     return undefined;
-  }, [validPhotos, trips, showRoutes, onPhotoSelect]);
+  }, [validPhotos, onPhotoSelect]);
 
-  // Home marker (its own layer so it survives photo/route re-renders).
+  // Route + arrows for the FOCUSED trip only. No focus → no route (keeps the map clean and fast).
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return undefined;
+    if (routeLayerRef.current) { map.removeLayer(routeLayerRef.current); routeLayerRef.current = null; }
+    if (!focusTrip) return undefined;
+
+    const route = sampleRoute((focusTrip.photos || []).filter((p) => p.hasGps));
+    if (route.length < 2) return undefined;
+
+    const layer = L.layerGroup();
+    routeLayerRef.current = layer;
+    const latlngs = route.map((p) => ({ lat: p.latitude, lng: p.longitude }));
+    L.polyline(latlngs.map((p) => [p.lat, p.lng]), {
+      color: '#F2A03D', weight: 3.5, opacity: 0.95, lineCap: 'round', lineJoin: 'round', interactive: false
+    }).addTo(layer);
+    addRouteArrows(layer, latlngs);
+    layer.addTo(map);
+
+    map.fitBounds(L.latLngBounds(latlngs.map((p) => [p.lat, p.lng])), { padding: [60, 60], maxZoom: 15 });
+    return undefined;
+  }, [focusTrip]);
+
+  // Home marker (own layer, survives other re-renders).
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return undefined;
@@ -146,12 +159,7 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
 
     const layer = L.layerGroup();
     overlayLayerRef.current = layer;
-    const icon = L.divIcon({
-      className: 'home-marker',
-      html: '<div class="home-marker-glyph">🏠</div>',
-      iconSize: [34, 34],
-      iconAnchor: [17, 17]
-    });
+    const icon = L.divIcon({ className: 'home-marker', html: '<div class="home-marker-glyph">🏠</div>', iconSize: [34, 34], iconAnchor: [17, 17] });
     L.marker([home.lat, home.lng], { icon }).addTo(layer);
     layer.addTo(map);
     return undefined;
@@ -164,6 +172,7 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
 
   const fitBounds = () => {
     if (!mapInstanceRef.current || validPhotos.length === 0) return;
+    onClearFocusTrip?.();
     mapInstanceRef.current.fitBounds(L.latLngBounds(validPhotos.map((p) => [p.latitude, p.longitude])), { padding: [50, 50] });
   };
 
@@ -196,9 +205,17 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
         </div>
       )}
       {isEmpty && <div className="map-empty-state map-empty-overlay"><div className="glass-surface"><Compass size={48} className="empty-icon" /><p>지도에 표시할 GPS 사진이 없습니다.</p></div></div>}
+
+      {focusTrip && (
+        <div className="map-focus-chip">
+          <Route size={14} />
+          <span className="text-truncate">{focusTrip.title}</span>
+          <button onClick={() => onClearFocusTrip?.()} aria-label="경로 지우기"><X size={14} /></button>
+        </div>
+      )}
+
       <div className="map-floating-controls">
         <button className="map-control-btn" onClick={() => setIsDark((v) => !v)} aria-label="지도 테마">{isDark ? <Sun size={20} /> : <Moon size={20} />}</button>
-        {!isEmpty && <button className={`map-control-btn ${showRoutes ? 'active' : ''}`} onClick={() => setShowRoutes((v) => !v)} aria-label="이동 순서선"><Route size={20} /></button>}
         <button className="map-control-btn" onClick={locateMe} aria-label="현재 위치"><LocateFixed size={20} /></button>
         <button className={`map-control-btn ${home ? 'active' : ''}`} onClick={() => {
           if (home && mapInstanceRef.current) mapInstanceRef.current.flyTo([home.lat, home.lng], 14, { duration: 0.5 });
@@ -206,7 +223,8 @@ export default function MapView({ photos = [], trips = [], onPhotoSelect, focusP
         }} aria-label="집 위치"><Home size={20} /></button>
         {!isEmpty && <button className="map-control-btn" onClick={fitBounds} aria-label="전체 보기"><Maximize2 size={20} /></button>}
       </div>
-      {!isEmpty && showRoutes && <div className="map-legend">— 이동 경로 · ▲ 진행 방향 · 시간순</div>}
+
+      {focusTrip && <div className="map-legend">— 이동 경로 · ▲ 진행 방향 · 시간순</div>}
     </div>
   );
 }

@@ -1,13 +1,13 @@
-import React from 'react';
-import { Calendar, Navigation, Camera, Compass, Pencil, Home, MapPin, Moon } from 'lucide-react';
+import React, { useState } from 'react';
+import { Calendar, Navigation, Camera, Compass, SlidersHorizontal, Home, MapPin, Moon, Route } from 'lucide-react';
 import PhotoImage from './PhotoImage';
+import TripEditSheet from './TripEditSheet';
 
-export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnMap, onRenameTrip, home, onSetHome }) {
-  const rename = (trip, e) => {
-    e.stopPropagation();
-    const next = window.prompt('여행 이름을 입력하세요', trip.title);
-    if (next !== null) onRenameTrip?.(trip.tripKey, next);
-  };
+export default function TimelineView({
+  trips = [], onPhotoSelect, onFocusTripOnMap, onRenameTrip,
+  onDeleteTrip, onMergeTrip, onSplitTripAt, onResetGrouping, home
+}) {
+  const [editing, setEditing] = useState(null); // { trip, canMerge }
 
   if (!trips || trips.length === 0) {
     return (
@@ -36,7 +36,7 @@ export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnM
       <div className="trips-list">
         {trips.map((trip, i) => (
           <div key={trip.id} className="trip-card">
-            <div className="trip-card-header" onClick={() => onFocusTripOnMap && onFocusTripOnMap(trip)}>
+            <div className="trip-card-header" onClick={() => onFocusTripOnMap?.(trip)}>
               {trip.coverPhoto && (
                 <PhotoImage photo={trip.coverPhoto} alt="cover" className="trip-card-cover" />
               )}
@@ -47,8 +47,12 @@ export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnM
                 </div>
                 <div className="trip-title-row">
                   <h3 className="truncate">{trip.title}</h3>
-                  <button className="trip-rename-btn" onClick={(e) => rename(trip, e)} aria-label="이름 변경">
-                    <Pencil size={12} />
+                  <button
+                    className="trip-rename-btn"
+                    onClick={(e) => { e.stopPropagation(); setEditing({ trip, canMerge: i < trips.length - 1 }); }}
+                    aria-label="여행 편집"
+                  >
+                    <SlidersHorizontal size={13} />
                   </button>
                 </div>
                 <div className="trip-badges">
@@ -74,19 +78,34 @@ export default function TimelineView({ trips = [], onPhotoSelect, onFocusTripOnM
                     photo={photo}
                     alt="thumbnail"
                     className="strip-thumb"
-                    onClick={() => onPhotoSelect && onPhotoSelect(photo)}
+                    onClick={() => onPhotoSelect?.(photo)}
                   />
                 ))}
                 {trip.photos.length > 6 && (
-                  <div className="strip-overflow">
-                    +{trip.photos.length - 6}
-                  </div>
+                  <div className="strip-overflow">+{trip.photos.length - 6}</div>
                 )}
               </div>
             )}
+
+            <button className="trip-route-btn" onClick={() => onFocusTripOnMap?.(trip)}>
+              <Route size={14} /> 지도에서 경로 보기
+            </button>
           </div>
         ))}
       </div>
+
+      {editing && (
+        <TripEditSheet
+          trip={editing.trip}
+          canMerge={editing.canMerge}
+          onRename={onRenameTrip}
+          onDelete={onDeleteTrip}
+          onMerge={onMergeTrip}
+          onSplitAt={onSplitTripAt}
+          onReset={onResetGrouping}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

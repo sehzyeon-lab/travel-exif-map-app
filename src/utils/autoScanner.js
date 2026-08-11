@@ -1,5 +1,5 @@
 import { scanGallery, isNative } from './mediaStore';
-import { formatPhotoDate } from './exifParser';
+import { formatPhotoDate, isImportablePhoto } from './exifParser';
 
 /**
  * Maps one native MediaStore row into the app's photo shape.
@@ -53,12 +53,16 @@ export async function scanDeviceGallery({
   }
 
   const result = await scanGallery({ onProgress, limit, since, requestLocationPermission });
-  const photos = (result.photos || []).map(toPhoto);
+  const mapped = (result.photos || []).map(toPhoto);
+  // Keep only genuine captures — drop items with no GPS, camera, or shutter info (screenshots,
+  // saved/downloaded images with EXIF stripped). Those aren't "photos you took".
+  const photos = mapped.filter(isImportablePhoto);
+  const droppedNonPhotos = mapped.length - photos.length;
 
   return {
     photos,
     total: result.total || photos.length,
-    skipped: result.skipped || 0,
+    skipped: (result.skipped || 0) + droppedNonPhotos,
     withGps: result.withGps ?? photos.filter((p) => p.hasGps).length,
     mediaLocationGranted: result.mediaLocationGranted !== false,
     scannedAt: result.scannedAt || Date.now()

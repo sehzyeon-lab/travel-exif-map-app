@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 // `Map` is aliased: the unaliased icon name shadows the global Map constructor in this module.
 import { Map as MapIcon, Clock, Image as ImageIcon, BarChart3, Trash2, Loader2, FolderSearch, AlertTriangle, Download } from 'lucide-react';
-import { parsePhotoExif, getPhotoFingerprint } from './utils/exifParser';
+import { parsePhotoExif, getPhotoFingerprint, isImportablePhoto } from './utils/exifParser';
 import { clusterPhotosIntoTrips, reverseGeocode, geocodeKey } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
 import { scanDeviceGallery } from './utils/autoScanner';
@@ -31,6 +31,17 @@ const GEOCODE_INTERVAL_MS = 1100;
 const LAST_SCAN_KEY = 'travel_last_scan_at';
 const HOME_KEY = 'travel_home_location';
 const TRIP_NAMES_KEY = 'travel_trip_names';
+const TRIP_MERGE_KEY = 'travel_trip_merges';
+const TRIP_SPLIT_KEY = 'travel_trip_splits';
+
+function readIdArray(key) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
 
 function readHome() {
   try {
@@ -119,6 +130,9 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [home, setHome] = useState(() => readHome());
   const [tripNames, setTripNames] = useState(() => readTripNames());
+  const [mergeBoundaries, setMergeBoundaries] = useState(() => new Set(readIdArray(TRIP_MERGE_KEY)));
+  const [splitBoundaries, setSplitBoundaries] = useState(() => new Set(readIdArray(TRIP_SPLIT_KEY)));
+  const [focusTrip, setFocusTrip] = useState(null);
 
   const geocodedRef = useRef(new Set());
   const fileInputRef = useRef(null);
@@ -147,10 +161,13 @@ export default function App() {
   useEffect(() => {
     loadPhotosFromDB().then((stored) => {
       if (stored.length > 0) {
-        stored.forEach((p) => {
+        // Retroactively drop anything that isn't a genuine capture (no GPS/camera/shutter info) —
+        // screenshots and stripped downloads that slipped in before this rule existed.
+        const cleaned = stored.filter(isImportablePhoto);
+        cleaned.forEach((p) => {
           if (p.locationName && p.locationName !== '위치 확인 중...') geocodedRef.current.add(p.id);
         });
-        setPhotos(stored.sort((a, b) => b.timestamp - a.timestamp));
+        setPhotos(cleaned.sort((a, b) => b.timestamp - a.timestamp));
       }
       setHydrated(true);
     });
@@ -159,7 +176,7 @@ export default function App() {
   // Recompute trips immediately, persist on a trailing debounce (a full rewrite of thousands of
   // records on every geocode tick would thrash IndexedDB).
   useEffect(() => {
-    setTrips(clusterPhotosIntoTrips(photos, { home, nameOverrides: tripNames }));
+    setTrips(clusterPhotosIntoTrips(photos, { home, nameOverrides: tripNames, mergeBoundaries, splitBoundaries }));
     if (!hydrated) return;
 
     clearTimeout(saveTimerRef.current);
@@ -169,7 +186,7 @@ export default function App() {
     }, 800);
 
     return () => clearTimeout(saveTimerRef.current);
-  }, [photos, hydrated, home, tripNames]);
+  }, [photos, hydrated, home, tripNames, mergeBoundaries, splitBoundaries]);
 
   // Reassigned on mount, not just cleared on unmount, so StrictMode's double-invoke in dev doesn't
   // leave the flag stuck at false.
@@ -344,7 +361,14 @@ export default function App() {
       const parsed = await processInChunks(newFiles, 12, parsePhotoExif, (current, total) => {
         setProgressState((prev) => ({ ...prev, current, total }));
       });
-      if (parsed.length > 0) setPhotos((prev) => mergePhotos(prev, parsed));
+      // Keep only genuine captures — skip screenshots / stripped images with no GPS, camera, or
+      // shutter info.
+      const real = parsed.filter(isImportablePhoto);
+      const droppedNonPhotos = parsed.length - real.length;
+      if (real.length > 0) setPhotos((prev) => mergePhotos(prev, real));
+      if (droppedNonPhotos > 0 && real.length === 0) {
+        setNotice({ type: 'info', message: `위치·기기 정보가 없는 ${droppedNonPhotos}장은 실제 촬영 사진이 아니라 제외했습니다.` });
+      }
     } catch (err) {
       console.error('EXIF import failed:', err);
       setNotice({ type: 'error', message: `사진 분석 실패: ${err.message || err}` });
@@ -367,6 +391,7 @@ export default function App() {
 
   const handleFocusMap = useCallback((photo) => {
     setMapFocusPhoto(photo);
+    setFocusTrip(null);
     setSelectedPhoto(null);
     setActiveTab('map');
   }, []);
@@ -416,6 +441,63 @@ export default function App() {
       if (location) localStorage.setItem(HOME_KEY, JSON.stringify(location));
       else localStorage.removeItem(HOME_KEY);
     } catch {}
+  }, []);
+
+  // Show only the tapped trip's route on the map (routes are per-trip, not all-at-once).
+  const handleFocusTripOnMap = useCallback((trip) => {
+    setFocusTrip(trip);
+    setSelectedPhoto(null);
+    setMapFocusPhoto(null);
+    setActiveTab('map');
+  }, []);
+
+  const persistIdSet = (key, set) => {
+    try { localStorage.setItem(key, JSON.stringify(Array.from(set))); } catch {}
+  };
+
+  // Delete an entire trip = remove its photos from the library.
+  const handleDeleteTrip = useCallback((trip) => {
+    const ids = new Set((trip.photos || []).map((p) => p.id));
+    setPhotos((prev) => prev.filter((p) => !ids.has(p.id)));
+    setFocusTrip((cur) => (cur?.id === trip.id ? null : cur));
+  }, []);
+
+  // Merge this trip into the chronologically-previous one by clearing the split at its first photo.
+  const handleMergeTrip = useCallback((trip) => {
+    const boundaryId = trip.photos?.[0]?.id;
+    if (!boundaryId) return;
+    setMergeBoundaries((prev) => {
+      const next = new Set(prev); next.add(boundaryId); persistIdSet(TRIP_MERGE_KEY, next); return next;
+    });
+    setSplitBoundaries((prev) => {
+      if (!prev.has(boundaryId)) return prev;
+      const next = new Set(prev); next.delete(boundaryId); persistIdSet(TRIP_SPLIT_KEY, next); return next;
+    });
+  }, []);
+
+  // Split a trip so a new one begins at the given photo.
+  const handleSplitTripAt = useCallback((photoId) => {
+    if (!photoId) return;
+    setSplitBoundaries((prev) => {
+      const next = new Set(prev); next.add(photoId); persistIdSet(TRIP_SPLIT_KEY, next); return next;
+    });
+    setMergeBoundaries((prev) => {
+      if (!prev.has(photoId)) return prev;
+      const next = new Set(prev); next.delete(photoId); persistIdSet(TRIP_MERGE_KEY, next); return next;
+    });
+  }, []);
+
+  // Undo manual merges/splits whose boundary photo falls inside this trip → back to auto grouping.
+  const handleResetTripGrouping = useCallback((trip) => {
+    const ids = new Set((trip.photos || []).map((p) => p.id));
+    setMergeBoundaries((prev) => {
+      const next = new Set([...prev].filter((id) => !ids.has(id)));
+      persistIdSet(TRIP_MERGE_KEY, next); return next;
+    });
+    setSplitBoundaries((prev) => {
+      const next = new Set([...prev].filter((id) => !ids.has(id)));
+      persistIdSet(TRIP_SPLIT_KEY, next); return next;
+    });
   }, []);
 
   const gpsCount = photos.reduce((n, p) => n + (p.hasGps ? 1 : 0), 0);
@@ -509,8 +591,8 @@ export default function App() {
       )}
 
       <div className="content-area">
-        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} focusPhoto={mapFocusPhoto} home={home} onSetHome={handleSetHome} />}
-        {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={(trip) => handleFocusMap(trip?.coverPhoto)} onRenameTrip={handleRenameTrip} home={home} onSetHome={handleSetHome} />}
+        {activeTab === 'map' && <MapView photos={photos} trips={trips} onPhotoSelect={setSelectedPhoto} focusPhoto={mapFocusPhoto} focusTrip={focusTrip} onClearFocusTrip={() => setFocusTrip(null)} home={home} onSetHome={handleSetHome} />}
+        {activeTab === 'timeline' && <TimelineView trips={trips} onPhotoSelect={setSelectedPhoto} onFocusTripOnMap={handleFocusTripOnMap} onRenameTrip={handleRenameTrip} onDeleteTrip={handleDeleteTrip} onMergeTrip={handleMergeTrip} onSplitTripAt={handleSplitTripAt} onResetGrouping={handleResetTripGrouping} home={home} />}
         {activeTab === 'gallery' && <GalleryView photos={photos} onPhotoSelect={setSelectedPhoto} selectedIds={selectedPhotoIds} onToggleSelection={handleToggleSelection} onSelectionChange={setSelectedPhotoIds} onDeleteSelected={handleDeleteSelected} onClearSelection={() => setSelectedPhotoIds(new Set())} />}
         {activeTab === 'analytics' && <AnalyticsView photos={photos} trips={trips} home={home} />}
       </div>
