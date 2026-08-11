@@ -65,6 +65,7 @@ export async function scanDeviceGallery({
     skipped: (result.skipped || 0) + droppedNonPhotos,
     withGps: result.withGps ?? photos.filter((p) => p.hasGps).length,
     mediaLocationGranted: result.mediaLocationGranted !== false,
+    partialAccess: result.partialAccess === true,
     scannedAt: result.scannedAt || Date.now()
   };
 }

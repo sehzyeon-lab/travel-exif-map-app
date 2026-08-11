@@ -34,6 +34,16 @@ export async function requestMediaAccess() {
   return MediaStoreScanner.requestAccess();
 }
 
+/** Opens this app's system settings so the user can switch to "Allow all photos". */
+export async function openAppSettings() {
+  if (!isNative()) return;
+  try {
+    await MediaStoreScanner.openSettings();
+  } catch (e) {
+    console.warn('[mediaStore] openSettings failed:', e);
+  }
+}
+
 /**
  * Scans the whole device gallery natively. GPS comes from each file's EXIF header (read with
  * ACCESS_MEDIA_LOCATION), not from the MediaStore columns, which no longer exist on Android 10+.

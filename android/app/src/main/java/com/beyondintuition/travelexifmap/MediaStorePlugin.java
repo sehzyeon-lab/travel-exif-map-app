@@ -3,6 +3,7 @@ package com.beyondintuition.travelexifmap;
 import android.Manifest;
 import android.content.ContentResolver;
 import android.content.ContentUris;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -10,6 +11,7 @@ import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.MediaStore;
+import android.provider.Settings;
 import android.util.Base64;
 import android.util.Size;
 
@@ -83,6 +85,21 @@ public class MediaStorePlugin extends Plugin {
         return isGranted(Manifest.permission.READ_EXTERNAL_STORAGE);
     }
 
+    /** Full library access (every photo), as opposed to Android 14's "Select photos" subset. */
+    private boolean hasFullReadAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return isGranted(Manifest.permission.READ_MEDIA_IMAGES);
+        }
+        return isGranted(Manifest.permission.READ_EXTERNAL_STORAGE);
+    }
+
+    /** True when only the "Select photos" (partial) grant is held — the app sees a hand-picked subset. */
+    private boolean isPartialAccess() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+            && !isGranted(Manifest.permission.READ_MEDIA_IMAGES)
+            && isGranted(READ_MEDIA_VISUAL_USER_SELECTED);
+    }
+
     private boolean hasMediaLocationAccess() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return true;
         return isGranted(Manifest.permission.ACCESS_MEDIA_LOCATION);
@@ -105,8 +122,24 @@ public class MediaStorePlugin extends Plugin {
     public void checkAccess(PluginCall call) {
         JSObject ret = new JSObject();
         ret.put("read", hasReadAccess());
+        ret.put("full", hasFullReadAccess());
+        ret.put("partial", isPartialAccess());
         ret.put("mediaLocation", hasMediaLocationAccess());
         call.resolve(ret);
+    }
+
+    /** Opens this app's system settings page so the user can switch to "Allow all" in one tap. */
+    @PluginMethod
+    public void openSettings(PluginCall call) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.fromParts("package", getContext().getPackageName(), null));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            call.resolve();
+        } catch (Exception e) {
+            call.reject(describe(e), "SETTINGS_FAILED", e);
+        }
     }
 
     @PluginMethod
@@ -308,6 +341,7 @@ public class MediaStorePlugin extends Plugin {
         ret.put("skipped", skipped);
         ret.put("withGps", withGps);
         ret.put("mediaLocationGranted", canReadLocation);
+        ret.put("partialAccess", isPartialAccess());
         ret.put("scannedAt", System.currentTimeMillis());
         call.resolve(ret);
     }

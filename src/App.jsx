@@ -5,7 +5,7 @@ import { parsePhotoExif, getPhotoFingerprint, isImportablePhoto } from './utils/
 import { clusterPhotosIntoTrips, reverseGeocode, geocodeKey } from './utils/geoUtils';
 import { loadPhotosFromDB, savePhotosToDB, clearPhotosDB } from './utils/storage';
 import { scanDeviceGallery } from './utils/autoScanner';
-import { isNative, checkMediaAccess, MediaAccessError, clearThumbnailMemoryCache } from './utils/mediaStore';
+import { isNative, checkMediaAccess, MediaAccessError, clearThumbnailMemoryCache, openAppSettings } from './utils/mediaStore';
 
 import ExifModal from './components/ExifModal';
 import MapView from './components/MapView';
@@ -290,7 +290,15 @@ export default function App() {
       }
       writeLastScanAt(result.scannedAt);
 
-      if (silent) {
+      // Partial ("Select photos") access always deserves a heads-up — even on a silent refresh —
+      // because the map is only ever showing a hand-picked subset until it's switched to "Allow all".
+      if (result.partialAccess) {
+        setNotice({
+          type: 'warning',
+          action: 'settings',
+          message: '일부 사진만 접근이 허용되어 있어요. 매번 사진을 골라야 하고 여행이 일부만 표시됩니다. "모든 사진 허용"으로 바꾸면 전체가 자동으로 채워집니다.'
+        });
+      } else if (silent) {
         // Background refresh: stay quiet. Any new photos already merged in above.
       } else if (incremental && result.photos.length === 0) {
         // Nothing new since last time — that's the expected quiet path, not a problem.
@@ -587,6 +595,14 @@ export default function App() {
             />
             <span>{notice.message}</span>
           </div>
+          {notice.action === 'settings' && (
+            <button
+              className="banner-action-btn"
+              onClick={(e) => { e.stopPropagation(); openAppSettings(); }}
+            >
+              모든 사진 허용하기 · 설정 열기
+            </button>
+          )}
         </div>
       )}
 
